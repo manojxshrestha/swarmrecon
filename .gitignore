@@ -1,0 +1,7 @@
+# local recon output — never push target data
+recon/
+*.log
+
+# OS/editor noise
+.DS_Store
+*.swp

@@ -1,0 +1,23 @@
+{
+    "flags": "-iE",
+    "patterns": [
+        "include=.*http",
+        "file=.*http",
+        "path=.*http",
+        "url=.*http",
+        "src=.*http",
+        "source=.*http",
+        "load=.*http",
+        "fetch=.*http",
+        "remote=",
+        "import=.*http",
+        "get=.*http",
+        "resource=.*http",
+        "\\?uri=.*http",
+        "\\?link=.*http",
+        "\\?script=.*http",
+        "\\?page=.*http",
+        "\\?inc=.*http",
+        "http(s)?://"
+    ]
+}

@@ -1,0 +1,21 @@
+{
+    "flags": "-iE",
+    "patterns": [
+        "%0d%0a",
+        "%0D%0A",
+        "\\r\\n",
+        "\\n",
+        "\\r",
+        "%09",
+        "\\t",
+        "Content-Length",
+        "Set-Cookie",
+        "Location",
+        "X-Forwarded-For",
+        "Host",
+        "\\%0A",
+        "\\%0D",
+        "Allow",
+        "Cache-Control"
+    ]
+}

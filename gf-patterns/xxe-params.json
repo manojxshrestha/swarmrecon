@@ -1,0 +1,19 @@
+{
+    "flags": "-iE",
+    "patterns": [
+        "<!DOCTYPE",
+        "<!ENTITY",
+        "&xxe;",
+        "SYSTEM\\s+\"file://",
+        "SYSTEM\\s+\"http://",
+        "xml\\s+version",
+        "<\\?xml",
+        "DTD",
+        "entity\\s+",
+        "parameter\\s+entity",
+        "external\\s+entity",
+        "xxe\\s+",
+        "file:///etc/",
+        "php://filter/"
+    ]
+}

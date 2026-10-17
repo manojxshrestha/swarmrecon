@@ -1,0 +1,25 @@
+{
+    "flags": "-iE",
+    "patterns": [
+        "/graphql",
+        "/graphiql",
+        "/v1/graphql",
+        "/v2/graphql",
+        "/v3/graphql",
+        "graphql?",
+        "query=",
+        "mutation=",
+        "variables=",
+        "operationName=",
+        "/playground",
+        "/voyager",
+        "graphiql",
+        "schema.json",
+        "introspection",
+        "__typename",
+        "graphql/explorer",
+        "altair",
+        "/gql",
+        "/graph"
+    ]
+}

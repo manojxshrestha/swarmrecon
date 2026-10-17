@@ -1,0 +1,20 @@
+{
+    "flags": "-iE",
+    "patterns": [
+        "{{",
+        "}}",
+        "${{",
+        "}}",
+        "<%=",
+        "%>",
+        "<script>.*{{",
+        "v-html",
+        "v-text",
+        "ng-bind",
+        "ng-include",
+        "{{.*constructor\\.",
+        "${.*alert\\(",
+        "handlebars",
+        "mustache"
+    ]
+}

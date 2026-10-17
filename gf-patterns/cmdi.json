@@ -1,0 +1,25 @@
+{
+    "flags": "-iE",
+    "patterns": [
+        "cmd=",
+        "command=",
+        "exec=",
+        "system=",
+        "bash=",
+        "sh=",
+        "ping=",
+        "nslookup=",
+        "netstat=",
+        "ls\\s*-",
+        "dir\\s+/",
+        "\\|cmd\\.",
+        ";cmd\\.",
+        "\\&cmd\\.",
+        "\\`cmd\\.",
+        "\\$\\(cmd\\.",
+        "os\\.",
+        "runtime\\.",
+        "process\\.",
+        "subprocess\\."
+    ]
+}

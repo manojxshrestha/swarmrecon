@@ -1,0 +1,23 @@
+{
+    "flags": "-iE",
+    "patterns": [
+        "input=",
+        "data=",
+        "value=",
+        "payload=",
+        "message=",
+        "text=",
+        "body=",
+        "content=",
+        "param=",
+        "var=",
+        "str=",
+        "raw=",
+        "\\?[^=]+=",
+        "&[^=]+=",
+        "eval\\(",
+        "exec\\(",
+        "inject=",
+        "script="
+    ]
+}

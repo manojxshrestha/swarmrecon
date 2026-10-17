@@ -1,0 +1,288 @@
+{
+  "version": "1.0",
+  "total_files": 125,
+  "description": "GF-Patterns-Collection - Categorized regex patterns for gf (grep-for) tool",
+  "categories": {
+    "secrets": {
+      "description": "API keys, tokens, credentials, secrets",
+      "files": [
+        "api-keys.json",
+        "asymmetric-keys_secrets.json",
+        "aws-keys_secrets.json",
+        "aws-mws-key.json",
+        "aws-s3_secrets.json",
+        "aws-secret-key.json",
+        "discord-webhooks.json",
+        "facebook-oauth_secrets.json",
+        "facebook-token_secrets.json",
+        "firebase.json",
+        "firebase_secrets.json",
+        "github.json",
+        "github_secrets.json",
+        "google-keys_secrets.json",
+        "google-oauth_secrets.json",
+        "google-service-account_secrets.json",
+        "google-token_secrets.json",
+        "heroku-keys_secrets.json",
+        "jwt.json",
+        "mailchimp-keys_secrets.json",
+        "mailgun-keys_secrets.json",
+        "npm-tokens.json",
+        "paypal-token_secrets.json",
+        "picatic-keys_secrets.json",
+        "pypi-tokens.json",
+        "secrets-generic.json",
+        "secrets.json",
+        "slack-token.json",
+        "slack-token_secrets.json",
+        "slack-webhook.json",
+        "slack-webhook_secrets.json",
+        "square-keys_secrets.json",
+        "stripe-keys_secrets.json",
+        "twilio-keys_secrets.json",
+        "twitter-oauth_secrets.json",
+        "twitter-secret.json",
+        "twitter-token_secrets.json"
+      ]
+    },
+    "rce": {
+      "description": "Remote Code Execution - param injection + output evidence",
+      "files": [
+        "rce-params.json",
+        "rce-output.json",
+        "php-code-execution.json",
+        "php-command-execution.json",
+        "php-sinks.json",
+        "exec-functions.json",
+        "deserialization-sinks.json",
+        "truffle.json",
+        "cmdi.json"
+      ]
+    },
+    "sqli": {
+      "description": "SQL Injection - param names + error messages",
+      "files": [
+        "sqli.json",
+        "sqli-error.json",
+        "nosqli.json"
+      ]
+    },
+    "xss": {
+      "description": "Cross-Site Scripting - reflected + DOM",
+      "files": [
+        "xss.json",
+        "domxss.json"
+      ]
+    },
+    "lfi": {
+      "description": "Local File Inclusion / Path Traversal",
+      "files": [
+        "lfi.json",
+        "image-path-traversal.json",
+        "php-read-filesystem.json",
+        "php-write-filesystem.json",
+        "php-open-filesystem-handler.json"
+      ]
+    },
+    "rfi": {
+      "description": "Remote File Inclusion",
+      "files": [
+        "rfi.json"
+      ]
+    },
+    "ssrf": {
+      "description": "Server-Side Request Forgery",
+      "files": [
+        "ssrf.json"
+      ]
+    },
+    "redirect": {
+      "description": "Open Redirect / URL Redirection",
+      "files": [
+        "redirect.json"
+      ]
+    },
+    "idor": {
+      "description": "Insecure Direct Object Reference",
+      "files": [
+        "idor.json"
+      ]
+    },
+    "ssti": {
+      "description": "Server-Side Template Injection",
+      "files": [
+        "ssti.json"
+      ]
+    },
+    "csti": {
+      "description": "Client-Side Template Injection (Vue, Angular, Handlebars, Mustache)",
+      "files": [
+        "csti.json"
+      ]
+    },
+    "crlf": {
+      "description": "CRLF Injection / HTTP Header Smuggling",
+      "files": [
+        "crlf.json"
+      ]
+    },
+    "xxe": {
+      "description": "XML External Entity Injection",
+      "files": [
+        "xxe.json",
+        "xxe-params.json",
+        "xml-parsing.json",
+        "xpath.json"
+      ]
+    },
+    "php": {
+      "description": "PHP-specific sinks, sources, errors, serialization",
+      "files": [
+        "php-callback-functions.json",
+        "php-code-execution.json",
+        "php-command-execution.json",
+        "php-curl.json",
+        "php-errors.json",
+        "php-informationdisclosure.json",
+        "php-open-filesystem-handler.json",
+        "php-read-filesystem.json",
+        "php-serialized.json",
+        "php-sinks.json",
+        "php-sources.json",
+        "php-write-filesystem.json"
+      ]
+    },
+    "url-analysis": {
+      "description": "URL extraction, parameter parsing, endpoint discovery",
+      "files": [
+        "api-endpoints.json",
+        "endpoints.json",
+        "url-extraction.json",
+        "url-has-params.json",
+        "url-parameters.json",
+        "interestingparams.json"
+      ]
+    },
+    "recon": {
+      "description": "Reconnaissance - subdomains, extensions, frameworks, tech stack",
+      "files": [
+        "interesting-extensions.json",
+        "interesting-subdomains.json",
+        "frameworks-tech.json",
+        "modern-frameworks.json",
+        "cloud-resources.json",
+        "servers.json",
+        "takeovers.json",
+        "sensitive-files.json",
+        "debug-pages.json",
+        "debug_logic.json",
+        "source-leak.json"
+      ]
+    },
+    "cip": {
+      "description": "CIP / Information disclosure - IPs, headers, auth, crypto",
+      "files": [
+        "ip.json",
+        "http-headers-raw.json",
+        "http-auth.json",
+        "crypto.json",
+        "authz-keywords.json",
+        "cors.json"
+      ]
+    },
+    "javascript": {
+      "description": "JavaScript analysis - sinks, variables, interesting patterns",
+      "files": [
+        "js-sinks.json",
+        "js-variables.json",
+        "js-interesting.json",
+        "json-secrets.json"
+      ]
+    },
+    "go": {
+      "description": "Go language patterns",
+      "files": [
+        "go-func-defs.json"
+      ]
+    },
+    "c": {
+      "description": "C/C++ unsafe functions",
+      "files": [
+        "c-unsafe-functions.json"
+      ]
+    },
+    "buffer-overflow": {
+      "description": "Buffer overflow indicators",
+      "files": [
+        "bufferoverflow.json"
+      ]
+    },
+    "content-analysis": {
+      "description": "Content filtering - badwords, swearwords, quoted strings",
+      "files": [
+        "badwords.json",
+        "swearwords.json",
+        "quoted-strings.json",
+        "typos.json",
+        "base64.json",
+        "parser-functions.json"
+      ]
+    },
+    "ai-services": {
+      "description": "AI/ML service endpoints and keys",
+      "files": [
+        "ai-services.json",
+        "anthropic.json",
+        "cohere.json",
+        "groq.json"
+      ]
+    },
+    "oauth-config": {
+      "description": "OAuth configuration patterns",
+      "files": [
+        "oauth-config.json",
+        "oauth.json",
+        "openapi.json"
+      ]
+    },
+    "uploads": {
+      "description": "File upload field detection",
+      "files": [
+        "upload-fields.json",
+        "file-upload.json"
+      ]
+    },
+    "graphql": {
+      "description": "GraphQL - introspection, mutations, query params",
+      "files": [
+        "graphql.json"
+      ]
+    },
+    "injection": {
+      "description": "Generic injection-prone parameter names",
+      "files": [
+        "injection.json"
+      ]
+    },
+    "framework-specific": {
+      "description": "Framework-specific patterns - Laravel, Spring Boot, ASP.NET",
+      "files": [
+        "laravel.json",
+        "springboot.json",
+        "aspnet.json"
+      ]
+    },
+    "saml": {
+      "description": "SAML / SSO assertion patterns",
+      "files": [
+        "saml.json"
+      ]
+    },
+    "websocket": {
+      "description": "WebSocket endpoint detection",
+      "files": [
+        "websocket.json"
+      ]
+    }
+  }
+}

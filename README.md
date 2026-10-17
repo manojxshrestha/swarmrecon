@@ -30,7 +30,7 @@
 
 ---
 
-**Quick links:** [What is this?](#what-is-this) · [Quick Install](#quick-install) · [Usage](#usage) · [Pipeline](#pipeline-12-steps) · [Output layout](#output-layout) · [Wordlists & patterns](#wordlists--patterns) · [Design notes](#design-notes)
+**Quick links:** [What is this?](#what-is-this) · [Quick Install](#quick-install) · [Usage](#usage) · [Pipeline](#pipeline-12-steps) · [Port discovery → brute-force](#port-discovery--service-brute-forcing-manual) · [Engagement Flow](#engagement-flow) · [Wordlists & patterns](#wordlists--patterns) · [Design notes](#design-notes)
 
 ---
 
@@ -129,6 +129,10 @@ Notes:
 | 11 | Web crawling (10 sub-steps) | `waymore`, `gau`, `uro`, `hakrawler`, `katana`, `gospider`, `httpx`, `filter.sh`, `gf` | root crawl files + `gooutput/` + `check/` (+ `check/gf/`) |
 | 12 | High-value paths | `ffuf` (auto-calibrated) | `12-high-value/` — `high-value-results.json`, `high-value-results.txt` |
 
+> **After step 3:** an optional manual extension — masscan → nmap `-sV` →
+> brutespray, see [Port Discovery & Service Brute-Forcing](#port-discovery--service-brute-forcing-manual)
+> (not automated: an explicit credential-guessing decision).
+
 ### Step 11 in detail
 
 1. `waymore -i <domain> -mode U` (venv at `~/waymore`) → root `wayurls.txt`
@@ -144,27 +148,177 @@ Notes:
 
 ---
 
-## Output layout
+## Port Discovery & Service Brute-Forcing (manual)
+
+Optional workflow that extends **step 3** — it covers the complete pipeline from
+fast port discovery to service-aware credential guessing using
+**masscan / dnmasscan → nmap → brutespray**:
+
+```mermaid
+flowchart LR
+    A["raw IPs<br/>($ipFile)"] -->|"masscan"| O["grepable port results<br/>(masscan.log)"]
+    B["alive-domains.txt<br/>(step 5)"] -->|"dnmasscan"| O
+    O -->|"nmap -sV"| G["nmap-scan.gnmap"]
+    G -->|"brutespray"| S["default-credential<br/>checks"]
+```
+
+> **Not automated in `swarmrecon.sh`** — launching credential guessing must
+> always be a deliberate, authorized decision. Follow the steps below.
+
+### 1. Port Analysis with Masscan
+
+```bash
+masscan -p1-65535 -iL $ipFile --max-rate 1800 -oG $outPutFile.log
+```
+
+| Option | Purpose |
+|--------|---------|
+| `-p1-65535` | Scan all TCP ports |
+| `-iL $ipFile` | Read target IPs from a file |
+| `--max-rate` | Packets per second (adjust to your network) |
+| `-oG` | Output in grepable format (compatible with Nmap) |
+
+### 2. Port Analysis with DNMasscan
+
+dnmasscan resolves domain names to IP addresses before scanning, then runs
+Masscan. This is useful when you have a list of domains instead of raw IPs.
+
+**Install Masscan (if not already)**
+
+```bash
+sudo apt-get --assume-yes install git make gcc
+git clone https://github.com/robertdavidgraham/masscan
+cd masscan
+sudo make install
+```
+
+**Download DNMasscan script**
+
+```bash
+wget https://raw.githubusercontent.com/rastating/dnmasscan/refs/heads/master/dnmasscan
+chmod +x dnmasscan
+```
+
+**Run DNMasscan**
+
+```bash
+sudo ./dnmasscan alive-domains.txt dns.log --top-ports 1000 -oG masscan.log
+```
+
+(`dns.log` = resolution output, `masscan.log` = grepable port results.)
+
+### 3. Service Scanning (Bridge to BruteSpray)
+
+Masscan only reports open ports. It does not identify the running service
+(e.g. SSH vs. a custom service on port 2222). BruteSpray requires **service
+names** to choose the correct brute-forcing module.
+
+Therefore you must feed the discovered open ports to Nmap with service version
+detection (`-sV`). Extract IPs and ports from Masscan output, then run targeted
+Nmap:
+
+```bash
+nmap -sV -iL <(grep -oP 'Host: \K[0-9.]+' masscan.log | sort -u) -p$(grep -oP '\d+(?=/open)' masscan.log | sort -u | paste -sd,) -oG nmap-scan.gnmap
+```
+
+**Breakdown:**
+
+| Part | What it does |
+|------|--------------|
+| `grep -oP 'Host: \K[0-9.]+' masscan.log \| sort -u` | Extract unique IP addresses from masscan.log |
+| `grep -oP '\d+(?=/open)' masscan.log \| sort -u \| paste -sd,` | Extract unique open port numbers and join with commas |
+| `nmap -sV -iL <(...) -p<ports> -oG nmap-scan.gnmap` | Run Nmap service scan only on those IPs and ports, output in grepable format |
+
+Now `nmap-scan.gnmap` contains lines like:
 
 ```
-recon/<domain>/
-├── recon.log                  # all raw tool output for this run
-├── https-subs.txt             # final: alive subdomains (URLs, https)
-├── alive-domains.txt          # final: alive bare hostnames
-├── wayurls.txt  gauurls.txt  waygauurls.txt  hakcrawlurls.txt
-├── cleansubskatanaurls.txt  alivesubsurls.txt
-├── merged-crawl.txt           # final: deduped crawl merge
-├── check/                     # filter.sh classification
-│   ├── crawledurls.txt  param-urls.txt  httpx-raw.txt
-│   ├── api-candidates.txt  idor-candidates.txt
-│   ├── api-param-candidates.txt  idor-param-candidates.txt
-│   └── gf/gf-*.txt            # gf-extract.sh pattern classes
-├── gooutput/                  # gospider raw + extracturls intermediates
-├── 01-wappalyzer/  02-dns-whois/  03-nmap/  04-ctfr/
-├── 06-puredns/  07-vhost/  08-zone-transfer/  09-directories/
-├── 10-robots-sitemap/  12-high-value/
-└── subdomains/                # step-5 staging (ends empty after merge)
+Host: 192.168.1.10 Ports: 22/open/tcp//ssh/OpenSSH 8.2p1/, 3306/open/tcp//mysql/MySQL 5.7/
 ```
+
+BruteSpray can parse this reliably.
+
+### 4. Default Password Scanning with BruteSpray
+
+**Login Pages**
+
+There are three things you need to have if you want to launch a brute force
+attack. The three things you need are an **endpoint with a login page, a
+username, and a password.**
+
+First, you need to find the endpoint you want to target — here BruteSpray finds
+the login services from the Nmap output:
+
+**Default Credentials:** https://github.com/danielmiessler/SecLists/tree/master/Passwords/Default-Credentials
+
+BruteSpray reads the Nmap grepable file and launches Medusa against each
+discovered login service (SSH, FTP, MySQL, RDP, etc.) using default or custom
+wordlists.
+
+```bash
+# install
+go install github.com/x90skysn3k/brutespray/v2@latest
+
+brutespray -f nmap-scan.gnmap
+
+# Use the -o flag to set a custom path
+brutespray -f nmap.gnmap -o scan-results
+```
+
+⚠️ Only against systems you own or have **explicit authorization** to test.
+
+---
+
+## Engagement Flow
+
+Every `swarmrecon.sh` run walks the same 12-step pipeline into `recon/<domain>/`,
+and every raw tool line lands in `recon.log`. The flow is fail-soft by design:
+each step reports **ok / skip / fail** into the summary table instead of stopping
+the run, so the script always finishes and exits `0`. Numbered dirs hold raw
+per-step output; the root holds the final artifacts. After step 3, port
+discovery → service brute-forcing exists only as a deliberate manual extension
+(see [the guide](#port-discovery--service-brute-forcing-manual)).
+
+```mermaid
+flowchart TD
+    classDef phase fill:#cce5ff,stroke:#333,stroke-width:2px,color:#000
+    classDef gate fill:#ffcccc,stroke:#333,stroke-width:2px,color:#000
+    classDef decision fill:#ffe5cc,stroke:#333,stroke-width:2px,color:#000
+    classDef terminal fill:#e6ccff,stroke:#333,stroke-width:2px,color:#000
+    classDef manual fill:#e0f2f1,stroke:#333,stroke-width:2px,color:#000
+
+    Start(["./swarmrecon.sh -d example.com"]):::terminal --> S1
+
+    S1["1. WAPPALYZER<br/>tech fingerprint<br/>→ 01-wappalyzer/"]:::phase --> S2
+    S2["2. DNS + WHOIS<br/>dig · whois · nslookup<br/>→ 02-dns-whois/"]:::phase --> S3
+    S3["3. NMAP<br/>port scan · open services<br/>→ 03-nmap/"]:::phase --> PortDec
+
+    PortDec{"Port discovery<br/>needed?"}:::decision
+    PortDec -->|"yes (manual)"| Manual["masscan / dnmasscan<br/>→ nmap -sV → brutespray<br/>run by hand — guide below"]:::manual
+    Manual --> S4
+    PortDec -->|"no"| S4
+
+    S4["4. CT LOGS (ctfr)<br/>crt.sh subs + liveness<br/>→ 04-ctfr/"]:::phase --> S5
+    S5["5. SUBENUM<br/>multi-source gather + resolve<br/>final: https-subs.txt<br/>final: alive-domains.txt<br/>staging → subdomains/"]:::phase --> S6
+    S6["6. DNS BRUTEFORCE<br/>puredns + massdns<br/>→ 06-puredns/"]:::phase --> S7
+    S7["7. VHOST FUZZING<br/>Host-header discovery<br/>→ 07-vhost/"]:::phase --> S8
+    S8["8. ZONE TRANSFER<br/>axfr against NS list<br/>→ 08-zone-transfer/"]:::phase --> S9
+    S9["9. DIRECTORY BRUTEFORCE<br/>ffuf · common.txt<br/>→ 09-directories/"]:::phase --> S10
+    S10["10. ROBOTS / SITEMAP<br/>waymore · curl<br/>→ 10-robots-sitemap/"]:::phase --> S11
+
+    S11["11. WEB CRAWL<br/>waymore · gau · hakrawler · katana<br/>final: wayurls.txt · gauurls.txt · waygauurls.txt<br/>final: hakcrawlurls.txt · cleansubskatanaurls.txt<br/>final: alivesubsurls.txt · merged-crawl.txt<br/>→ check/ (filter + gf) · gooutput/"]:::phase --> S12
+
+    S12["12. HIGH-VALUE<br/>secrets · admin · backups<br/>→ 12-high-value/"]:::phase --> Summary
+
+    Summary(["Summary table<br/>recon.log · exit 0"]):::terminal
+```
+
+**Key properties of this flow:**
+
+- **Fail-soft is the contract.** A missing tool prints the exact install hint (`./install.sh` / `go install …`) and records a *skip*; a failed step records *fail* + points at `recon.log`; neither stops the run — the summary table always prints and the script exits `0`.
+- **Root = final, numbered dirs = raw.** Only step 5's `https-subs.txt` + `alive-domains.txt` and step 11's seven crawl files are final; `01-…` through `12-high-value/` and `gooutput/` are raw material. `subdomains/` is step-5 staging and ends empty after the merge.
+- **Step 11 never dies wholesale.** Each crawl tool, `filter.sh`, and `gf-extract.sh` runs as an independent sub-step — one missing tool skips its slice only. `check/` holds the filter classification (`crawledurls` · `param-urls` · `httpx-raw` · `api-candidates` · `idor-candidates` · `api-param-candidates` · `idor-param-candidates`) plus `gf/gf-*.txt` pattern classes; `gooutput/` holds gospider raw + extracturls intermediates.
+- **The manual branch stays manual.** masscan/nmap/brutespray needs interactive `sudo` and an explicit credential-guessing decision, so it's a deliberate side path off step 3 — never automated in the script.
+- **Setup is one-time, not per-run.** `./install.sh` is idempotent and `./sync-gf-patterns.sh` fills `~/.gf` once; re-runs skip what already exists.
 
 ---
 
@@ -217,3 +371,7 @@ Git-tracked source of truth for `gf(1)` patterns (126 real patterns +
   `{ cmd1; cmd2; }` rather than `&&` chains.
 - **No runtime installs**: `swarmrecon.sh` never installs anything — missing tools
   are reported with the exact command needed to install them.
+- **Idempotent installer**: `install.sh` checks every component first and skips
+  what's already installed (markers for ctfr/subenum; `command -v` for tools);
+  the GF sync copies only missing/changed patterns and prunes stale ones —
+  safe to re-run any time.

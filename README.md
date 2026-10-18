@@ -6,11 +6,11 @@
   <br>
 </h1>
 
-<h4 align="center">Single-command web recon — CT · DNS · nmap · bruteforce · vhosts · crawling · filtering — in one 12-step script</h4>
+<h4 align="center">Single-command web recon — CT · DNS · nmap · bruteforce · vhosts · crawling · filtering — in one 14-step script</h4>
 
 <p align="center">
   <img src="https://img.shields.io/badge/bash-5.x-4EAA25" alt="Bash 5.x">
-  <img src="https://img.shields.io/badge/steps-12-blue" alt="12 Steps">
+  <img src="https://img.shields.io/badge/steps-14-blue" alt="14 Steps">
   <img src="https://img.shields.io/badge/tools-20%2B-orange" alt="20+ Tools">
   <img src="https://img.shields.io/badge/fail--soft-never%20aborts-success" alt="Fail-Soft">
   <img src="https://img.shields.io/badge/wordlists-bundled-lightgrey" alt="Bundled Wordlists">
@@ -19,7 +19,7 @@
 
 <p align="center">
   <b>swarmrecon</b> runs your entire recon playbook as one command —
-  <code>./swarmrecon.sh -d target.com</code> — across <b>12 steps</b> and <b>20+ tools</b>,
+  <code>./swarmrecon.sh -d target.com</code> — across <b>14 steps</b> and <b>20+ tools</b>,
   writing everything into a fixed <code>recon/&lt;domain&gt;/</code> tree:
   per-step raw output plus <b>final consumable files at the root</b>
   (<code>https-subs.txt</code> · <code>alive-domains.txt</code> · <code>merged-crawl.txt</code> ·
@@ -30,7 +30,7 @@
 
 ---
 
-**Quick links:** [What is this?](#what-is-this) · [Quick Install](#quick-install) · [Usage](#usage) · [Pipeline](#pipeline-12-steps) · [Port discovery → brute-force](#port-discovery--service-brute-forcing-manual) · [Engagement Flow](#engagement-flow) · [Wordlists & patterns](#wordlists--patterns) · [Design notes](#design-notes)
+**Quick links:** [What is this?](#what-is-this) · [Quick Install](#quick-install) · [Usage](#usage) · [Pipeline](#pipeline-14-steps) · [Port discovery → brute-force](#port-discovery--service-brute-forcing-manual) · [Engagement Flow](#engagement-flow) · [Wordlists & patterns](#wordlists--patterns) · [Design notes](#design-notes)
 
 ---
 
@@ -112,28 +112,30 @@ Notes:
 
 ---
 
-## Pipeline (12 steps)
+## Pipeline (14 steps)
 
 | # | Step | Tool(s) | Output |
 |---|------|---------|--------|
 | 1 | Technology discovery | `wappalyzer` (Playwright/Chromium) | `01-wappalyzer/technologies.json` |
 | 2 | DNS + WHOIS | `dig`, `whois`, `nslookup` | `02-dns-whois/` — 13 files: A/AAAA/NS/MX/TXT/CAA/SOA/DMARC, Google/Cloudflare resolvers, nslookup, whois per domain + per resolved IP |
-| 3 | Port scan (4 stages) | `nmap` | `03-nmap/` — `nmap-quick.txt` (`-Pn --open`), `nmap-version.txt` (`-sV`), `nmap-allports.txt` (`-p-`), `nmap-full.txt` (`-p- -sV`) |
-| 4 | Certificate Transparency | `ctfr` (auto-venv) + `httpx` | `04-ctfr/` — `ctfr-subdomains.txt`, `live-ctfr-subdomains.txt` (live-probed) |
-| 5 | Subdomain enumeration | `subenum` + CT merge | root **`https-subs.txt`**, **`alive-domains.txt`** |
-| 6 | DNS bruteforce | `puredns` + `massdns` | `06-puredns/puredns-subdomains.txt` |
-| 7 | Vhost fuzzing | `ffuf` (2 passes vs. dynamic baseline) | `07-vhost/` — `vhost-baseline.txt`, `vhost-mc-all.json`, `vhost-no403.json` |
-| 8 | Zone transfer (AXFR) | `nslookup`, `dig axfr` per NS | `08-zone-transfer/` — `nslookup-NS.txt`, `axfr-<ns>.txt` |
-| 9 | Directory bruteforce | `ffuf` | `09-directories/` — `ffuf-directory.json`, `ffuf-directory.txt` |
-| 10 | Public files | `curl` | `10-robots-sitemap/` — `robots.txt`, `security.txt`, 7 sitemap path variants |
-| 11 | Web crawling (10 sub-steps) | `waymore`, `gau`, `uro`, `hakrawler`, `katana`, `gospider`, `httpx`, `filter.sh`, `gf` | root crawl files + `gooutput/` + `check/` (+ `check/gf/`) |
-| 12 | High-value paths | `ffuf` (auto-calibrated) | `12-high-value/` — `high-value-results.json`, `high-value-results.txt` |
+| 3 | Passive intel | `whois` + `msftrecon`, `Scopify`, `Spoofy`, `cloud_enum` (auto-venv) | `03-intel/` — `domain_info_general.txt`, `azure_tenant_domains.txt`, `scopify.txt`, `spoof.txt`, `cloud_enum.txt` |
+| 4 | OSINT — subdomains + emails | `theHarvester` (2 source sets) | `04-osint/` — `theharvester_subdomains.json`, `theharvester_emails.json`, `subdomains.txt`, `emails.txt` |
+| 5 | Port scan (4 stages) | `nmap` | `05-nmap/` — `nmap-quick.txt` (`-Pn --open`), `nmap-version.txt` (`-sV`), `nmap-allports.txt` (`-p-`), `nmap-full.txt` (`-p- -sV`) |
+| 6 | Certificate Transparency | `ctfr` (auto-venv) + `httpx` | `06-ctfr/` — `ctfr-subdomains.txt`, `live-ctfr-subdomains.txt` (live-probed) |
+| 7 | Subdomain enumeration | `subenum` + CT merge | root **`https-subs.txt`**, **`alive-domains.txt`** |
+| 8 | DNS bruteforce | `puredns` + `massdns` | `08-puredns/puredns-subdomains.txt` |
+| 9 | Vhost fuzzing | `ffuf` (2 passes vs. dynamic baseline) | `09-vhost/` — `vhost-baseline.txt`, `vhost-mc-all.json`, `vhost-no403.json` |
+| 10 | Zone transfer (AXFR) | `nslookup`, `dig axfr` per NS | `10-zone-transfer/` — `nslookup-NS.txt`, `axfr-<ns>.txt` |
+| 11 | Directory bruteforce | `ffuf` | `11-directories/` — `ffuf-directory.json`, `ffuf-directory.txt` |
+| 12 | Public files | `curl` | `12-robots-sitemap/` — `robots.txt`, `security.txt`, 7 sitemap path variants |
+| 13 | Web crawling (10 sub-steps) | `waymore`, `gau`, `uro`, `hakrawler`, `katana`, `gospider`, `httpx`, `filter.sh`, `gf` | root crawl files + `gooutput/` + `check/` (+ `check/gf/`) |
+| 14 | High-value paths | `ffuf` (auto-calibrated) | `14-high-value/` — `high-value-results.json`, `high-value-results.txt` |
 
-> **After step 3:** an optional manual extension — masscan → nmap `-sV` →
+> **After step 5:** an optional manual extension — masscan → nmap `-sV` →
 > brutespray, see [Port Discovery & Service Brute-Forcing](#port-discovery--service-brute-forcing-manual)
 > (not automated: an explicit credential-guessing decision).
 
-### Step 11 in detail
+### Step 13 in detail
 
 1. `waymore -i <domain> -mode U` (venv at `~/waymore`) → root `wayurls.txt`
 2. `echo <domain> | gau --threads 10 --subs | anew` → root `gauurls.txt`
@@ -150,14 +152,14 @@ Notes:
 
 ## Port Discovery & Service Brute-Forcing (manual)
 
-Optional workflow that extends **step 3** — it covers the complete pipeline from
+Optional workflow that extends **step 5** — it covers the complete pipeline from
 fast port discovery to service-aware credential guessing using
 **masscan / dnmasscan → nmap → brutespray**:
 
 ```mermaid
 flowchart LR
     A["raw IPs<br/>($ipFile)"] -->|"masscan"| O["grepable port results<br/>(masscan.log)"]
-    B["alive-domains.txt<br/>(step 5)"] -->|"dnmasscan"| O
+    B["alive-domains.txt<br/>(step 7)"] -->|"dnmasscan"| O
     O -->|"nmap -sV"| G["nmap-scan.gnmap"]
     G -->|"brutespray"| S["default-credential<br/>checks"]
 ```
@@ -270,11 +272,11 @@ brutespray -f nmap.gnmap -o scan-results
 
 ## Engagement Flow
 
-Every `swarmrecon.sh` run walks the same 12-step pipeline into `recon/<domain>/`,
+Every `swarmrecon.sh` run walks the same 14-step pipeline into `recon/<domain>/`,
 and every raw tool line lands in `recon.log`. The flow is fail-soft by design:
 each step reports **ok / skip / fail** into the summary table instead of stopping
 the run, so the script always finishes and exits `0`. Numbered dirs hold raw
-per-step output; the root holds the final artifacts. After step 3, port
+per-step output; the root holds the final artifacts. After step 5, port
 discovery → service brute-forcing exists only as a deliberate manual extension
 (see [the guide](#port-discovery--service-brute-forcing-manual)).
 
@@ -290,24 +292,28 @@ flowchart TD
 
     S1["1. WAPPALYZER<br/>tech fingerprint<br/>→ 01-wappalyzer/"]:::phase --> S2
     S2["2. DNS + WHOIS<br/>dig · whois · nslookup<br/>→ 02-dns-whois/"]:::phase --> S3
-    S3["3. NMAP<br/>port scan · open services<br/>→ 03-nmap/"]:::phase --> PortDec
+
+    S3["3. PASSIVE INTEL<br/>whois · msftrecon · Scopify · Spoofy · cloud_enum<br/>→ 03-intel/"]:::phase --> S4
+    S4["4. OSINT (theHarvester)<br/>subdomains + emails<br/>→ 04-osint/"]:::phase --> S5
+
+    S5["5. NMAP<br/>port scan · open services<br/>→ 05-nmap/"]:::phase --> PortDec
 
     PortDec{"Port discovery<br/>needed?"}:::decision
     PortDec -->|"yes (manual)"| Manual["masscan / dnmasscan<br/>→ nmap -sV → brutespray<br/>run by hand — guide below"]:::manual
-    Manual --> S4
-    PortDec -->|"no"| S4
+    Manual --> S6
+    PortDec -->|"no"| S6
 
-    S4["4. CT LOGS (ctfr)<br/>crt.sh subs + liveness<br/>→ 04-ctfr/"]:::phase --> S5
-    S5["5. SUBENUM<br/>multi-source gather + resolve<br/>final: https-subs.txt<br/>final: alive-domains.txt<br/>staging → subdomains/"]:::phase --> S6
-    S6["6. DNS BRUTEFORCE<br/>puredns + massdns<br/>→ 06-puredns/"]:::phase --> S7
-    S7["7. VHOST FUZZING<br/>Host-header discovery<br/>→ 07-vhost/"]:::phase --> S8
-    S8["8. ZONE TRANSFER<br/>axfr against NS list<br/>→ 08-zone-transfer/"]:::phase --> S9
-    S9["9. DIRECTORY BRUTEFORCE<br/>ffuf · common.txt<br/>→ 09-directories/"]:::phase --> S10
-    S10["10. ROBOTS / SITEMAP<br/>waymore · curl<br/>→ 10-robots-sitemap/"]:::phase --> S11
+    S6["6. CT LOGS (ctfr)<br/>crt.sh subs + liveness<br/>→ 06-ctfr/"]:::phase --> S7
+    S7["7. SUBENUM<br/>multi-source gather + resolve<br/>final: https-subs.txt<br/>final: alive-domains.txt<br/>staging → subdomains/"]:::phase --> S8
+    S8["8. DNS BRUTEFORCE<br/>puredns + massdns<br/>→ 08-puredns/"]:::phase --> S9
+    S9["9. VHOST FUZZING<br/>Host-header discovery<br/>→ 09-vhost/"]:::phase --> S10
+    S10["10. ZONE TRANSFER<br/>axfr against NS list<br/>→ 10-zone-transfer/"]:::phase --> S11
+    S11["11. DIRECTORY BRUTEFORCE<br/>ffuf · common.txt<br/>→ 11-directories/"]:::phase --> S12
+    S12["12. ROBOTS / SITEMAP<br/>waymore · curl<br/>→ 12-robots-sitemap/"]:::phase --> S13
 
-    S11["11. WEB CRAWL<br/>waymore · gau · hakrawler · katana<br/>final: wayurls.txt · gauurls.txt · waygauurls.txt<br/>final: hakcrawlurls.txt · cleansubskatanaurls.txt<br/>final: alivesubsurls.txt · merged-crawl.txt<br/>→ check/ (filter + gf) · gooutput/"]:::phase --> S12
+    S13["13. WEB CRAWL<br/>waymore · gau · hakrawler · katana<br/>final: wayurls.txt · gauurls.txt · waygauurls.txt<br/>final: hakcrawlurls.txt · cleansubskatanaurls.txt<br/>final: alivesubsurls.txt · merged-crawl.txt<br/>→ check/ (filter + gf) · gooutput/"]:::phase --> S14
 
-    S12["12. HIGH-VALUE<br/>secrets · admin · backups<br/>→ 12-high-value/"]:::phase --> Summary
+    S14["14. HIGH-VALUE<br/>secrets · admin · backups<br/>→ 14-high-value/"]:::phase --> Summary
 
     Summary(["Summary table<br/>recon.log · exit 0"]):::terminal
 ```
@@ -315,16 +321,16 @@ flowchart TD
 **Key properties of this flow:**
 
 - **Fail-soft is the contract.** A missing tool prints the exact install hint (`./install.sh` / `go install …`) and records a *skip*; a failed step records *fail* + points at `recon.log`; neither stops the run — the summary table always prints and the script exits `0`.
-- **Root = final, numbered dirs = raw.** Only step 5's `https-subs.txt` + `alive-domains.txt` and step 11's seven crawl files are final; `01-…` through `12-high-value/` and `gooutput/` are raw material. `subdomains/` is step-5 staging and ends empty after the merge.
-- **Step 11 never dies wholesale.** Each crawl tool, `filter.sh`, and `gf-extract.sh` runs as an independent sub-step — one missing tool skips its slice only. `check/` holds the filter classification (`crawledurls` · `param-urls` · `httpx-raw` · `api-candidates` · `idor-candidates` · `api-param-candidates` · `idor-param-candidates`) plus `gf/gf-*.txt` pattern classes; `gooutput/` holds gospider raw + extracturls intermediates.
-- **The manual branch stays manual.** masscan/nmap/brutespray needs interactive `sudo` and an explicit credential-guessing decision, so it's a deliberate side path off step 3 — never automated in the script.
+- **Root = final, numbered dirs = raw.** Only step 7's `https-subs.txt` + `alive-domains.txt` and step 13's seven crawl files are final; `01-…` through `14-high-value/` and `gooutput/` are raw material. `subdomains/` is step-7 staging and ends empty after the merge.
+- **Step 13 never dies wholesale.** Each crawl tool, `filter.sh`, and `gf-extract.sh` runs as an independent sub-step — one missing tool skips its slice only. `check/` holds the filter classification (`crawledurls` · `param-urls` · `httpx-raw` · `api-candidates` · `idor-candidates` · `api-param-candidates` · `idor-param-candidates`) plus `gf/gf-*.txt` pattern classes; `gooutput/` holds gospider raw + extracturls intermediates.
+- **The manual branch stays manual.** masscan/nmap/brutespray needs interactive `sudo` and an explicit credential-guessing decision, so it's a deliberate side path off step 5 — never automated in the script.
 - **Setup is one-time, not per-run.** `./install.sh` is idempotent and `./sync-gf-patterns.sh` fills `~/.gf` once; re-runs skip what already exists.
 
 ---
 
 ## Helper scripts
 
-Standalone tools, also invoked automatically by step 11:
+Standalone tools, also invoked automatically by step 13:
 
 | Script | Usage | Notes |
 |--------|-------|-------|
@@ -339,11 +345,11 @@ Standalone tools, also invoked automatically by step 11:
 
 | File | Used by |
 |------|---------|
-| `subdomains-top1million-20000.txt` | step 6 — puredns bruteforce |
-| `resolvers.txt` | step 6 — puredns resolvers |
-| `common.txt` | step 7 — vhost fuzzing |
-| `raft-medium-directories.txt` | step 9 — directory bruteforce |
-| `high-value-paths.txt` | step 12 — secrets/disclosure/juicy files (`#`-marked sections) |
+| `subdomains-top1million-20000.txt` | step 8 — puredns bruteforce |
+| `resolvers.txt` | step 8 — puredns resolvers |
+| `common.txt` | step 9 — vhost fuzzing |
+| `raft-medium-directories.txt` | step 11 — directory bruteforce |
+| `high-value-paths.txt` | step 14 — secrets/disclosure/juicy files (`#`-marked sections) |
 
 ### `gf-patterns/` (127 files)
 

@@ -40,6 +40,15 @@ while getopts ":d:h" opt; do
 done
 [ -z "$DOMAIN" ] && usage
 
+# DOMAIN is used inside eval() (step 4 binary ladder) and as a path component
+# (recon/<DOMAIN>/) — accept plain hostnames only: no slashes, no shell metas.
+# (plain printf: the log helpers below are not defined yet)
+if ! [[ "$DOMAIN" =~ ^[A-Za-z0-9_]([A-Za-z0-9._-]*[A-Za-z0-9])?$ ]] || [ "${#DOMAIN}" -gt 253 ]; then
+    printf '%s[!]%s invalid domain: %s (hostname chars only: A-Z a-z 0-9 . _ -, max 253)\n' \
+        "$C_RED" "$C_RESET" "$DOMAIN" >&2
+    exit 1
+fi
+
 SWARM_DIR="$(cd "$(dirname "$0")" && pwd)"   # dir of swarmrecon.sh (wordlists live here)
 WL_DIR="$SWARM_DIR/wordlists"
 # pipx (wappalyzer) + go tools (puredns) install into these — make sure a
@@ -76,6 +85,53 @@ SUMMARY=()
 note_result() { SUMMARY+=("$1|$2|$3"); }
 
 now_s() { date +%s; }
+
+# ---- venv helpers (ported from openswarm scripts/tools/_env.sh) ----
+# resolve a venv activate script: venv/ first, then .venv/ (uv default).
+# ALWAYS exits 0 — prints empty string when no venv exists.
+venv_activate() {  # $1 = tool dir
+    local d="$1"
+    if [ -f "$d/venv/bin/activate" ]; then
+        printf '%s' "$d/venv/bin/activate"
+    elif [ -f "$d/.venv/bin/activate" ]; then
+        printf '%s' "$d/.venv/bin/activate"
+    fi
+    return 0
+}
+
+# self-heal a venv whose python symlink points at a vanished interpreter
+# (e.g. system default flipped 3.13 -> 3.14): re-point bin/python at the
+# site-matching interpreter. idempotent no-op when versions already match.
+repair_venv_python() {  # $1 = activate path
+    local activate="${1:-}"
+    [ -f "$activate" ] || return 0
+    local venv_dir site_ver resolved_ver candidate c
+    venv_dir="$(cd "$(dirname "$activate")/.." && pwd)"
+    # site-packages version: lib/pythonX.Y/
+    site_ver="$(basename "$(ls -d "$venv_dir"/lib/python*/ 2>/dev/null | head -n1)" 2>/dev/null)"
+    [ -n "$site_ver" ] || return 0
+    # what bin/python actually resolves to
+    resolved_ver="$(basename "$(readlink -f "$venv_dir/bin/python" 2>/dev/null)" 2>/dev/null)"
+    [ -n "$resolved_ver" ] || return 0
+    if [ "$site_ver" = "$resolved_ver" ]; then
+        return 0
+    fi
+    # find matching interpreter — prefer /usr/bin, then PATH
+    candidate=""
+    for c in "/usr/bin/$site_ver" "$site_ver"; do
+        if command -v "$c" >/dev/null 2>&1 || [ -x "$c" ]; then
+            candidate="$(command -v "$c" 2>/dev/null || echo "$c")"
+            break
+        fi
+    done
+    [ -n "$candidate" ] || return 0
+    ln -sfn "$candidate" "$venv_dir/bin/python" || return 0
+    # python3 is usually a symlink to python; re-point if it exists as a link
+    if [ -L "$venv_dir/bin/python3" ]; then
+        ln -sfn python "$venv_dir/bin/python3"
+    fi
+    return 0
+}
 
 # ================================================================
 #  Step 1 — Technology discovery (Wappalyzer)
@@ -183,18 +239,18 @@ step_dns_whois() {
 }
 
 # ================================================================
-#  Step 3 — Port scan (nmap)  [4-stage sequence per user]
+#  Step 5 — Port scan (nmap)  [4-stage sequence per user]
 #  1 quick TCP -> 2 service/versions -> 3 all TCP ports -> 4 full + versions
-#  output → recon/<domain>/03-nmap/
+#  output → recon/<domain>/05-nmap/
 # ================================================================
 step_nmap() {
     if ! command -v nmap >/dev/null 2>&1; then
-        warn "Step 3 SKIPPED: nmap not found (run ./install.sh / install manually)"
-        note_result "skip" "3 · Nmap port scan" "nmap not installed"
+        warn "Step 5 SKIPPED: nmap not found (run ./install.sh / install manually)"
+        note_result "skip" "5 · Nmap port scan" "nmap not installed"
         return 0
     fi
 
-    local sdir="$OUTDIR/03-nmap"
+    local sdir="$OUTDIR/05-nmap"
     mkdir -p "$sdir"
     info "4 stages: quick TCP -> -sV -> -p- -> -p- -sV (progress in recon.log)"
     local domain="$DOMAIN"
@@ -212,30 +268,31 @@ step_nmap() {
     } >>"$LOG" 2>&1; then
         local nports
         nports=$(grep -c '/tcp open' "$sdir/nmap-full.txt" 2>/dev/null || true)
-        ok "done in $(( $(now_s) - t0 ))s → 03-nmap/ (4 reports, ${nports:-0} open ports)"
-        note_result "ok" "3 · Nmap port scan" "03-nmap/ · ${nports:-0} open ports"
+        ok "done in $(( $(now_s) - t0 ))s → 05-nmap/ (4 reports, ${nports:-0} open ports)"
+        note_result "ok" "5 · Nmap port scan" "05-nmap/ · ${nports:-0} open ports"
     else
         err "FAILED (exit=$?) — see ${LOG}"
-        note_result "fail" "3 · Nmap port scan" "failed — see recon.log"
+        note_result "fail" "5 · Nmap port scan" "failed — see recon.log"
     fi
 }
 
 # ================================================================
-#  Step 4 — Certificate Transparency logs (ctfr)
+#  Step 6 — Certificate Transparency logs (ctfr)
 #  ctfr lives in $HOME/ctfr with its own venv (PEP-668 blocks system pip);
 #  the venv is ACTIVATED automatically before running (user requirement).
-#  output → recon/<domain>/04-ctfr/
+#  output → recon/<domain>/06-ctfr/
 # ================================================================
 step_ctfr() {
     local ctfr_dir="$HOME/ctfr"
-    if [ ! -f "$ctfr_dir/ctfr.py" ] || [ ! -f "$ctfr_dir/venv/bin/activate" ]; then
-        warn "Step 4 SKIPPED: ctfr not ready at ${ctfr_dir} (run ./install.sh)"
-        note_result "skip" "4 · CT logs (ctfr)" "ctfr/venv missing — run ./install.sh"
+    local ctfr_act; ctfr_act="$(venv_activate "$ctfr_dir")"
+    if [ ! -f "$ctfr_dir/ctfr.py" ] || [ -z "$ctfr_act" ]; then
+        warn "Step 6 SKIPPED: ctfr not ready at ${ctfr_dir} (run ./install.sh)"
+        note_result "skip" "6 · CT logs (ctfr)" "ctfr/venv missing — run ./install.sh"
         return 0
     fi
 
     # absolute path: this step cds into the ctfr dir before running
-    local sdir_rel="$OUTDIR/04-ctfr"
+    local sdir_rel="$OUTDIR/06-ctfr"
     mkdir -p "$sdir_rel"
     local sdir; sdir="$(cd "$sdir_rel" && pwd)"
 
@@ -245,7 +302,8 @@ step_ctfr() {
 
     if (
         # auto-activate the virtual environment (user requirement)
-        source "$ctfr_dir/venv/bin/activate"
+        repair_venv_python "$ctfr_act"
+        source "$ctfr_act"
         cd "$ctfr_dir"
         # exact command per user, output into our step dir
         python3 ctfr.py -d "$domain" -o "$sdir/ctfr-subdomains.txt"
@@ -261,23 +319,23 @@ step_ctfr() {
                 | awk '{print $1}' \
                 | httpx -silent -o "$sdir/live-ctfr-subdomains.txt" >>"$LOG" 2>&1 || true
             n_live=$(grep -c 'http' "$sdir/live-ctfr-subdomains.txt" 2>/dev/null || true)
-            ok "done in $(( $(now_s) - t0 ))s → 04-ctfr/ (${nsubs:-0} CT entries, ${n_live:-0} live via httpx)"
+            ok "done in $(( $(now_s) - t0 ))s → 06-ctfr/ (${nsubs:-0} CT entries, ${n_live:-0} live via httpx)"
         else
             warn "httpx not found — live CT probe skipped (install ProjectDiscovery httpx)"
-            ok "done in $(( $(now_s) - t0 ))s → 04-ctfr/ctfr-subdomains.txt (${nsubs:-0} entries, live probe skipped)"
+            ok "done in $(( $(now_s) - t0 ))s → 06-ctfr/ctfr-subdomains.txt (${nsubs:-0} entries, live probe skipped)"
         fi
-        note_result "ok" "4 · CT logs (ctfr)" "04-ctfr/ · ${nsubs:-0} CT / ${n_live:-0} live"
+        note_result "ok" "6 · CT logs (ctfr)" "06-ctfr/ · ${nsubs:-0} CT / ${n_live:-0} live"
     else
         err "FAILED (exit=$?) — see ${LOG}"
-        note_result "fail" "4 · CT logs (ctfr)" "failed — see recon.log"
+        note_result "fail" "6 · CT logs (ctfr)" "failed — see recon.log"
     fi
 }
 
 # ================================================================
-#  Step 6 — DNS subdomain bruteforce (puredns + massdns)
+#  Step 8 — DNS subdomain bruteforce (puredns + massdns)
 #  puredns = fast, handles wildcards; massdns compiled for speed (user).
 #  wordlists: <swarmrecon>/wordlists/{subdomains-top1million-20000,resolvers}.txt
-#  output → recon/<domain>/06-puredns/
+#  output → recon/<domain>/08-puredns/
 # ================================================================
 step_puredns() {
     # puredns may not be on PATH — accept $HOME/go/bin/puredns (go install default)
@@ -287,27 +345,27 @@ step_puredns() {
     elif [ -x "$HOME/go/bin/puredns" ]; then
         pd="$HOME/go/bin/puredns"
     else
-        warn "Step 6 SKIPPED: puredns not found (run ./install.sh)"
-        note_result "skip" "6 · DNS bruteforce" "puredns missing — run ./install.sh"
+        warn "Step 8 SKIPPED: puredns not found (run ./install.sh)"
+        note_result "skip" "8 · DNS bruteforce" "puredns missing — run ./install.sh"
         return 0
     fi
 
     if ! command -v massdns >/dev/null 2>&1; then
-        warn "Step 6 SKIPPED: massdns not found (puredns backend — run ./install.sh)"
-        note_result "skip" "6 · DNS bruteforce" "massdns missing — run ./install.sh"
+        warn "Step 8 SKIPPED: massdns not found (puredns backend — run ./install.sh)"
+        note_result "skip" "8 · DNS bruteforce" "massdns missing — run ./install.sh"
         return 0
     fi
 
     local wl_wordlist="$WL_DIR/subdomains-top1million-20000.txt"
     local wl_resolvers="$WL_DIR/resolvers.txt"
     if [ ! -s "$wl_wordlist" ] || [ ! -s "$wl_resolvers" ]; then
-        warn "Step 6 SKIPPED: wordlists missing in ${WL_DIR} (ship with the repo — check wordlists/)"
-        note_result "skip" "6 · DNS bruteforce" "wordlists missing — check wordlists/"
+        warn "Step 8 SKIPPED: wordlists missing in ${WL_DIR} (ship with the repo — check wordlists/)"
+        note_result "skip" "8 · DNS bruteforce" "wordlists missing — check wordlists/"
         return 0
     fi
 
     # absolute path (same convention as other steps)
-    local sdir_rel="$OUTDIR/06-puredns"
+    local sdir_rel="$OUTDIR/08-puredns"
     mkdir -p "$sdir_rel"
     local sdir; sdir="$(cd "$sdir_rel" && pwd)"
 
@@ -320,41 +378,41 @@ step_puredns() {
         > "$sdir/puredns-subdomains.txt" 2>>"$LOG"; then
         local nsubs=0
         nsubs=$(grep -c '\.' "$sdir/puredns-subdomains.txt" 2>/dev/null || true)
-        ok "done in $(( $(now_s) - t0 ))s → 06-puredns/puredns-subdomains.txt (${nsubs:-0} subdomains)"
-        note_result "ok" "6 · DNS bruteforce" "06-puredns/ · ${nsubs:-0} subdomains"
+        ok "done in $(( $(now_s) - t0 ))s → 08-puredns/puredns-subdomains.txt (${nsubs:-0} subdomains)"
+        note_result "ok" "8 · DNS bruteforce" "08-puredns/ · ${nsubs:-0} subdomains"
     else
         err "FAILED (exit=$?) — see ${LOG}"
-        note_result "fail" "6 · DNS bruteforce" "failed — see recon.log"
+        note_result "fail" "8 · DNS bruteforce" "failed — see recon.log"
     fi
 }
 
 # ================================================================
-#  Step 7 — Vhost fuzzing (ffuf)
+#  Step 9 — Vhost fuzzing (ffuf)
 #  1) baseline: Content-Length of a non-existent vhost (curl -I)
 #  2) ffuf pass A: -fs <baseline> -mc all
 #  3) ffuf pass B: -fs <baseline> -fc 403
 #  (user's 2nd example had "-H -H" typo -> single -H used)
-#  output → recon/<domain>/07-vhost/
+#  output → recon/<domain>/09-vhost/
 # ================================================================
 step_vhost_ffuf() {
     local miss=0
     for t in ffuf curl; do
         if ! command -v "$t" >/dev/null 2>&1; then
-            warn "Step 7 SKIPPED: $t not found (run ./install.sh / install manually)"
+            warn "Step 9 SKIPPED: $t not found (run ./install.sh / install manually)"
             miss=1
         fi
     done
     local wl="$WL_DIR/common.txt"
     if [ ! -s "$wl" ]; then
-        warn "Step 7 SKIPPED: ${wl} missing (ships with repo — check wordlists/)"
+        warn "Step 9 SKIPPED: ${wl} missing (ships with repo — check wordlists/)"
         miss=1
     fi
     if [ "$miss" -ne 0 ]; then
-        note_result "skip" "7 · Vhost fuzzing" "ffuf/curl/common.txt missing"
+        note_result "skip" "9 · Vhost fuzzing" "ffuf/curl/common.txt missing"
         return 0
     fi
 
-    local sdir_rel="$OUTDIR/07-vhost"
+    local sdir_rel="$OUTDIR/09-vhost"
     mkdir -p "$sdir_rel"
     local sdir; sdir="$(cd "$sdir_rel" && pwd)"
     local domain="$DOMAIN"
@@ -370,7 +428,7 @@ step_vhost_ffuf() {
     if [ -z "$base_cl" ]; then
         err "baseline FAILED: no Content-Length from non-existent vhost — cannot set -fs"
         err "see ${sdir}/vhost-baseline.txt"
-        note_result "fail" "7 · Vhost fuzzing" "baseline: no Content-Length"
+        note_result "fail" "9 · Vhost fuzzing" "baseline: no Content-Length"
         return 0
     fi
     info "baseline CL=${base_cl} (defnotvalid.${domain})"
@@ -390,35 +448,35 @@ step_vhost_ffuf() {
         local n1=0 n2=0
         n1=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("results",[])))' "$sdir/vhost-mc-all.json" 2>/dev/null || echo "?")
         n2=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("results",[])))' "$sdir/vhost-no403.json" 2>/dev/null || echo "?")
-        ok "done in $(( $(now_s) - t0 ))s → 07-vhost/ (mc-all: ${n1}, no403: ${n2} matches)"
-        note_result "ok" "7 · Vhost fuzzing" "07-vhost/ · ${n1}+${n2} matches (CL=${base_cl})"
+        ok "done in $(( $(now_s) - t0 ))s → 09-vhost/ (mc-all: ${n1}, no403: ${n2} matches)"
+        note_result "ok" "9 · Vhost fuzzing" "09-vhost/ · ${n1}+${n2} matches (CL=${base_cl})"
     else
         err "FAILED (exit=$?) — see ${LOG}"
-        note_result "fail" "7 · Vhost fuzzing" "failed — see recon.log"
+        note_result "fail" "9 · Vhost fuzzing" "failed — see recon.log"
     fi
 }
 
 # ================================================================
-#  Step 8 — Zone Transfer attack (AXFR)
+#  Step 10 — Zone Transfer attack (AXFR)
 #  1) nslookup -type=NS <domain>          (list nameservers)
 #  2) dig axfr <ns> <domain>              (per nameserver attempt)
 #  Success marker: "XFR size:" or ANSWER: >0 in dig output.
-#  output → recon/<domain>/08-zone-transfer/
+#  output → recon/<domain>/10-zone-transfer/
 # ================================================================
 step_zone_transfer() {
     local miss=0
     for t in nslookup dig; do
         if ! command -v "$t" >/dev/null 2>&1; then
-            warn "Step 8 SKIPPED: $t not found (install manually / ./install.sh)"
+            warn "Step 10 SKIPPED: $t not found (install manually / ./install.sh)"
             miss=1
         fi
     done
     if [ "$miss" -ne 0 ]; then
-        note_result "skip" "8 · Zone transfer" "nslookup/dig missing"
+        note_result "skip" "10 · Zone transfer" "nslookup/dig missing"
         return 0
     fi
 
-    local sdir_rel="$OUTDIR/08-zone-transfer"
+    local sdir_rel="$OUTDIR/10-zone-transfer"
     mkdir -p "$sdir_rel"
     local sdir; sdir="$(cd "$sdir_rel" && pwd)"
     local domain="$DOMAIN"
@@ -435,7 +493,7 @@ step_zone_transfer() {
     fi
     if [ -z "$nss" ]; then
         err "no nameservers found for ${domain} — nothing to attempt"
-        note_result "fail" "8 · Zone transfer" "no nameservers discovered"
+        note_result "fail" "10 · Zone transfer" "no nameservers discovered"
         return 0
     fi
 
@@ -457,42 +515,42 @@ step_zone_transfer() {
     done
 
     if [ "$xfr_ok" -gt 0 ]; then
-        ok "done in $(( $(now_s) - t0 ))s → 08-zone-transfer/ — ⚠ ${xfr_ok}/${total} nameservers ALLOWED transfer"
-        note_result "ok" "8 · Zone transfer" "⚠ AXFR open on ${xfr_ok}/${total} NS!"
+        ok "done in $(( $(now_s) - t0 ))s → 10-zone-transfer/ — ⚠ ${xfr_ok}/${total} nameservers ALLOWED transfer"
+        note_result "ok" "10 · Zone transfer" "⚠ AXFR open on ${xfr_ok}/${total} NS!"
     else
-        ok "done in $(( $(now_s) - t0 ))s → 08-zone-transfer/ — 0/${total} nameservers allowed transfer (all refused)"
-        note_result "ok" "8 · Zone transfer" "0/${total} NS allowed (all refused)"
+        ok "done in $(( $(now_s) - t0 ))s → 10-zone-transfer/ — 0/${total} nameservers allowed transfer (all refused)"
+        note_result "ok" "10 · Zone transfer" "0/${total} NS allowed (all refused)"
     fi
 }
 
 # ================================================================
-#  Step 9 — Directory bruteforcing (ffuf)
+#  Step 11 — Directory bruteforcing (ffuf)
 #  1) baseline: Content-Length of a random non-existent path (curl -I)
 #  2) ffuf -fc 403,404 -fs 0,<baseline_CL> -mc 200,301,302 -t 100
 #  3) jq -r '.results[].url' -> flat list
 #  (user example used -fs 0; baseline CL added per user: "we need to see
 #   on its too filter size" -> dynamic, like the vhost step)
-#  output → recon/<domain>/09-directories/
+#  output → recon/<domain>/11-directories/
 # ================================================================
 step_dirbust() {
     local miss=0
     for t in ffuf curl jq; do
         if ! command -v "$t" >/dev/null 2>&1; then
-            warn "Step 9 SKIPPED: $t not found (run ./install.sh / install manually)"
+            warn "Step 11 SKIPPED: $t not found (run ./install.sh / install manually)"
             miss=1
         fi
     done
     local wl="$WL_DIR/raft-medium-directories.txt"
     if [ ! -s "$wl" ]; then
-        warn "Step 9 SKIPPED: ${wl} missing (ships with repo — check wordlists/)"
+        warn "Step 11 SKIPPED: ${wl} missing (ships with repo — check wordlists/)"
         miss=1
     fi
     if [ "$miss" -ne 0 ]; then
-        note_result "skip" "9 · Directory bruteforce" "ffuf/curl/jq/wordlist missing"
+        note_result "skip" "11 · Directory bruteforce" "ffuf/curl/jq/wordlist missing"
         return 0
     fi
 
-    local sdir_rel="$OUTDIR/09-directories"
+    local sdir_rel="$OUTDIR/11-directories"
     mkdir -p "$sdir_rel"
     local sdir; sdir="$(cd "$sdir_rel" && pwd)"
     local domain="$DOMAIN"
@@ -529,32 +587,32 @@ step_dirbust() {
     } >>"$LOG" 2>&1; then
         local nurls=0
         nurls=$(grep -c 'http' "$sdir/ffuf-directory.txt" 2>/dev/null || true)
-        ok "done in $(( $(now_s) - t0 ))s → 09-directories/ (${nurls:-0} paths matched)"
-        note_result "ok" "9 · Directory bruteforce" "09-directories/ · ${nurls:-0} paths"
+        ok "done in $(( $(now_s) - t0 ))s → 11-directories/ (${nurls:-0} paths matched)"
+        note_result "ok" "11 · Directory bruteforce" "11-directories/ · ${nurls:-0} paths"
     else
         err "FAILED (exit=$?) — see ${LOG}"
-        note_result "fail" "9 · Directory bruteforce" "failed — see recon.log"
+        note_result "fail" "11 · Directory bruteforce" "failed — see recon.log"
     fi
 }
 
 # ================================================================
-#  Step 10 — Public files: robots.txt / security.txt / sitemaps
+#  Step 12 — Public files: robots.txt / security.txt / sitemaps
 #  (user's script; sections -> separate files, headers -> recon.log.
 #   robots.txt fetched ONCE then grepped locally for section 3 —
 #   same bytes as re-fetching, one fewer request.)
 #  TODO(user "improvements to make later"): proper XML parse (namespaces,
 #  .gz, indexes), recursive sitemap-index follow w/ limits, diff against
 #  crawl/archive URLs. NOTE: a path in a sitemap is NOT a vuln by itself.
-#  output → recon/<domain>/10-robots-sitemap/
+#  output → recon/<domain>/12-robots-sitemap/
 # ================================================================
 step_robots_sitemap() {
     if ! command -v curl >/dev/null 2>&1; then
-        warn "Step 10 SKIPPED: curl not found"
-        note_result "skip" "10 · robots/sitemap" "curl missing"
+        warn "Step 12 SKIPPED: curl not found"
+        note_result "skip" "12 · robots/sitemap" "curl missing"
         return 0
     fi
 
-    local sdir_rel="$OUTDIR/10-robots-sitemap"
+    local sdir_rel="$OUTDIR/12-robots-sitemap"
     mkdir -p "$sdir_rel"
     local sdir; sdir="$(cd "$sdir_rel" && pwd)"
     local domain="$DOMAIN"
@@ -606,16 +664,16 @@ step_robots_sitemap() {
         local n_adv=0 n_loc=0
         n_adv=$(grep -ci 'sitemap:' "$sdir/advertised-sitemaps.txt" 2>/dev/null || true)
         n_loc=$(grep -c 'http' "$sdir/sitemap-urls.txt" 2>/dev/null || true)
-        ok "done in $(( $(now_s) - t0 ))s → 10-robots-sitemap/ (advertised: ${n_adv:-0}, sitemap URLs: ${n_loc:-0})"
-        note_result "ok" "10 · robots/sitemap" "10-robots-sitemap/ · ${n_loc:-0} sitemap URLs"
+        ok "done in $(( $(now_s) - t0 ))s → 12-robots-sitemap/ (advertised: ${n_adv:-0}, sitemap URLs: ${n_loc:-0})"
+        note_result "ok" "12 · robots/sitemap" "12-robots-sitemap/ · ${n_loc:-0} sitemap URLs"
     else
         err "FAILED (exit=$?) — see ${LOG}"
-        note_result "fail" "10 · robots/sitemap" "failed — see recon.log"
+        note_result "fail" "12 · robots/sitemap" "failed — see recon.log"
     fi
 }
 
 # ================================================================
-#  Step 5 — Subdomain enumeration (subenum, user's own tool)
+#  Step 7 — Subdomain enumeration (subenum, user's own tool)
 #  runs from ~/subenum:  ./subenum.sh -d <domain> -hp
 #  (-hp writes the alive probes; prefix is "" for -d mode, only -l mode
 #   prefixes filenames with "<dom>-")
@@ -628,8 +686,8 @@ step_robots_sitemap() {
 step_subenum() {
     local subenum_dir="$HOME/subenum"
     if [ ! -f "$subenum_dir/subenum.sh" ]; then
-        warn "Step 5 SKIPPED: subenum not found at ${subenum_dir} (run ./install.sh)"
-        note_result "skip" "5 · Subenum" "subenum missing — run ./install.sh"
+        warn "Step 7 SKIPPED: subenum not found at ${subenum_dir} (run ./install.sh)"
+        note_result "skip" "7 · Subenum" "subenum missing — run ./install.sh"
         return 0
     fi
 
@@ -664,7 +722,7 @@ step_subenum() {
         # merges live-ctfr, NOT raw ctfr):
         #   cat live-ctfr-subdomains.txt https-subs.txt | sort -u > temp && mv temp https-subs.txt
         # (temp+mv required: shell would truncate https-subs.txt before cat reads it)
-        local ctfr_live="$OUTDIR/04-ctfr/live-ctfr-subdomains.txt"
+        local ctfr_live="$OUTDIR/06-ctfr/live-ctfr-subdomains.txt"
         if [ -s "$ctfr_live" ]; then
             if [ -s "$sdir/https-subs.txt" ]; then
                 if cat "$ctfr_live" "$sdir/https-subs.txt" | sort -u > "$sdir/temp" \
@@ -682,7 +740,7 @@ step_subenum() {
                     info "https-subs.txt seeded from live-ctfr (subenum produced none)"
             fi
         else
-            info "no live-ctfr-subdomains.txt (step 4 skipped or httpx missing) — https-subs unchanged"
+            info "no live-ctfr-subdomains.txt (step 6 skipped or httpx missing) — https-subs unchanged"
         fi
 
         # alive-domains: same treatment (user's manual command — scheme stripped
@@ -727,19 +785,19 @@ step_subenum() {
             n_https=$(grep -c 'http' "$OUTDIR/https-subs.txt" 2>/dev/null || true)
             n_alive=$(grep -c '.' "$OUTDIR/alive-domains.txt" 2>/dev/null || true)
             ok "done in $(( $(now_s) - t0 ))s → https-subs.txt (${n_https:-0} URLs) + alive-domains.txt (${n_alive:-0} hosts)"
-            note_result "ok" "5 · Subenum" "https-subs: ${n_https:-0} · alive: ${n_alive:-0}"
+            note_result "ok" "7 · Subenum" "https-subs: ${n_https:-0} · alive: ${n_alive:-0}"
         else
             err "subenum ran but nothing copied — check ${subenum_dir}/outputs/${domain}/alive/"
-            note_result "fail" "5 · Subenum" "no alive output produced — see recon.log"
+            note_result "fail" "7 · Subenum" "no alive output produced — see recon.log"
         fi
     else
         err "FAILED (exit=$?) — see ${LOG}"
-        note_result "fail" "5 · Subenum" "failed — see recon.log"
+        note_result "fail" "7 · Subenum" "failed — see recon.log"
     fi
 }
 
 # ================================================================
-#  Step 11 — Web crawling (user's exact pipeline)
+#  Step 13 — Web crawling (user's exact pipeline)
 #    waymore (venv @ ~/waymore) -> wayurls.txt      (moved into recon/<domain>/)
 #    gau    echo $D | gau --threads 10 --subs | anew gauurls.txt
 #    merge  cat wayurls gauurls | uro | sort -u > waygauurls.txt
@@ -764,9 +822,10 @@ step_crawl() {
     rm -rf "$OUTDIR/gooutput" "$OUTDIR/check"
 
     # --- 1. waymore (user: venv in ~/waymore, run there, then move file) ---
-    local wayvenv="$HOME/waymore/venv/bin/activate"
+    local wayvenv; wayvenv="$(venv_activate "$HOME/waymore")"
     if [ -f "$wayvenv" ]; then
         if (
+            repair_venv_python "$wayvenv"
             source "$wayvenv"
             cd "$HOME/waymore" || exit 1
             rm -f wayurls.txt                       # never move a stale file
@@ -842,7 +901,7 @@ step_crawl() {
 
     # --- 4. cat https-subs.txt | hakrawler -subs -u -d 3 > hakcrawlurls.txt ---
     if [ ! -s "$subs" ]; then
-        warn "https-subs.txt missing/empty (step 5) — hakrawler skipped"; skipped=$((skipped + 1))
+        warn "https-subs.txt missing/empty (step 7) — hakrawler skipped"; skipped=$((skipped + 1))
     elif command -v hakrawler >/dev/null 2>&1; then
         if cat "$subs" | hakrawler -subs -u -d 3 > "$OUTDIR/hakcrawlurls.txt" 2>>"$LOG"; then
             local nh=0; nh=$(grep -c 'http' "$OUTDIR/hakcrawlurls.txt" 2>/dev/null || true)
@@ -856,7 +915,7 @@ step_crawl() {
 
     # --- 5. cat https-subs.txt | katana -d 3 -jc -timeout 15 -c 20 | anew cleansubskatanaurls.txt ---
     if [ ! -s "$subs" ]; then
-        warn "https-subs.txt missing/empty (step 5) — katana skipped"; skipped=$((skipped + 1))
+        warn "https-subs.txt missing/empty (step 7) — katana skipped"; skipped=$((skipped + 1))
     elif command -v katana >/dev/null 2>&1; then
         local kt_out="$OUTDIR/cleansubskatanaurls.txt"
         if command -v anew >/dev/null 2>&1; then
@@ -880,7 +939,7 @@ step_crawl() {
 
     # --- 6. gospider -S https-subs.txt -o gooutput -c 10 -d 3 -t 20 ---
     if [ ! -s "$subs" ]; then
-        warn "https-subs.txt missing/empty (step 5) — gospider skipped"; skipped=$((skipped + 1))
+        warn "https-subs.txt missing/empty (step 7) — gospider skipped"; skipped=$((skipped + 1))
     elif command -v gospider >/dev/null 2>&1; then
         if gospider -S "$subs" -o "$OUTDIR/gooutput" -c 10 -d 3 -t 20 >>"$LOG" 2>&1; then
             local ngs=0; ngs=$(find "$OUTDIR/gooutput" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
@@ -1023,16 +1082,16 @@ step_crawl() {
     # step verdict
     if [ "$ran" -gt 0 ]; then
         ok "done in $(( $(now_s) - t0 ))s — ${ran} sub-steps ran, ${skipped} skipped"
-        note_result "ok" "11 · Web crawl" "${ran} ran / ${skipped} skipped"
+        note_result "ok" "13 · Web crawl" "${ran} ran / ${skipped} skipped"
     elif [ "$skipped" -gt 0 ]; then
-        note_result "skip" "11 · Web crawl" "all skipped — missing tools/inputs"
+        note_result "skip" "13 · Web crawl" "all skipped — missing tools/inputs"
     else
-        note_result "fail" "11 · Web crawl" "all sub-steps failed — see recon.log"
+        note_result "fail" "13 · Web crawl" "all sub-steps failed — see recon.log"
     fi
 }
 
 # ================================================================
-#  Step 12 — High-value path hunt (user's exact ffuf invocation)
+#  Step 14 — High-value path hunt (user's exact ffuf invocation)
 #    purpose: secrets, information disclosure, endpoints, errors,
 #             juicy file extensions  (wordlists/high-value-paths.txt)
 #    base URL comes from the user's interactive prompt manually;
@@ -1040,7 +1099,7 @@ step_crawl() {
 # ================================================================
 step_highvalue() {
     local t0; t0=$(now_s)
-    local sdir_rel="$OUTDIR/12-high-value"
+    local sdir_rel="$OUTDIR/14-high-value"
     mkdir -p "$sdir_rel"
     local sdir; sdir="$(cd "$sdir_rel" && pwd)"
     local wl="$WL_DIR/high-value-paths.txt"
@@ -1051,15 +1110,15 @@ step_highvalue() {
 
     local miss=0
     if ! command -v ffuf >/dev/null 2>&1; then
-        warn "Step 12 SKIPPED: ffuf not found (run ./install.sh)"
+        warn "Step 14 SKIPPED: ffuf not found (run ./install.sh)"
         miss=1
     fi
     if [ ! -s "$wl" ]; then
-        warn "Step 12 SKIPPED: ${wl} missing (ships with repo — check wordlists/)"
+        warn "Step 14 SKIPPED: ${wl} missing (ships with repo — check wordlists/)"
         miss=1
     fi
     if [ "$miss" -ne 0 ]; then
-        note_result "skip" "12 · High-value" "ffuf/wordlist missing"
+        note_result "skip" "14 · High-value" "ffuf/wordlist missing"
         return 0
     fi
 
@@ -1084,11 +1143,292 @@ step_highvalue() {
         else
             warn "jq not found — hit count and .txt extraction skipped (json kept)"
         fi
-        ok "done in $(( $(now_s) - t0 ))s → 12-high-value/high-value-results.json (${nres:-0} hits)"
-        note_result "ok" "12 · High-value" "12-high-value/ · ${nres:-0} hits"
+        ok "done in $(( $(now_s) - t0 ))s → 14-high-value/high-value-results.json (${nres:-0} hits)"
+        note_result "ok" "14 · High-value" "14-high-value/ · ${nres:-0} hits"
     else
         err "ffuf FAILED (exit=$?) — see ${LOG}"
-        note_result "fail" "12 · High-value" "failed — see recon.log"
+        note_result "fail" "14 · High-value" "failed — see recon.log"
+    fi
+}
+
+# ================================================================
+#  Step 3 — Passive intel (whois · msftrecon · Scopify · Spoofy · cloud_enum)
+#  openswarm Phase-3 parity: same module commands and output filenames as
+#  scripts/tools/phase-intel.sh (so phase3-3b-4-skip-prompt.md copies line up).
+#  output → recon/<domain>/03-intel/
+# ================================================================
+step_intel() {
+    local t0; t0=$(now_s)
+    local sdir_rel="$OUTDIR/03-intel"
+    mkdir -p "$sdir_rel"
+    local sdir; sdir="$(cd "$sdir_rel" && pwd)"
+    local domain="$DOMAIN"
+    local tools_dir="$HOME/.local/bin"
+    local ran=0 skipped=0
+
+    local act_msft act_scop act_spoof act_cloud
+    act_msft="$(venv_activate "$tools_dir/msftrecon")"
+    act_scop="$(venv_activate "$tools_dir/Scopify")"
+    act_spoof="$(venv_activate "$tools_dir/Spoofy")"
+    act_cloud="$(venv_activate "$tools_dir/cloud_enum")"
+
+    # fresh-run hygiene: truncate every module output
+    : > "$sdir/domain_info_general.txt"
+    : > "$sdir/azure_tenant_domains.txt"
+    : > "$sdir/scopify.txt"
+    : > "$sdir/spoof.txt"
+    : > "$sdir/cloud_enum.txt"
+
+    info "03-intel/ → ${sdir}"
+
+    # --- whois (plain, no venv) ---
+    if command -v whois >/dev/null 2>&1; then
+        local whois_target="$domain"
+        if command -v unfurl >/dev/null 2>&1; then
+            whois_target="$(unfurl format %r <<< "$domain" 2>/dev/null || printf '%s' "$domain")"
+        fi
+        if whois "$whois_target" >>"$sdir/domain_info_general.txt" 2>>"$LOG"; then
+            ran=$((ran + 1))
+        else
+            warn "whois returned nothing for ${whois_target}"
+            skipped=$((skipped + 1))
+        fi
+    else
+        warn "whois not installed — skipped"
+        skipped=$((skipped + 1))
+    fi
+
+    # --- msftrecon (appends to domain_info_general + azure tenant grep) ---
+    local msft_script="$tools_dir/msftrecon/msftrecon/msftrecon.py"
+    if [ -f "$msft_script" ] && [ -n "$act_msft" ]; then
+        local msft_out="$sdir/.msftrecon.tmp"
+        (
+            repair_venv_python "$act_msft"
+            source "$act_msft"
+            python3 "$msft_script" -d "$domain"
+        ) >"$msft_out" 2>&1 || true
+        if [ -s "$msft_out" ]; then
+            cat "$msft_out" >> "$sdir/domain_info_general.txt"
+            grep -iE 'microsoft|azure|tenant' "$msft_out" > "$sdir/azure_tenant_domains.txt" 2>/dev/null || true
+            ran=$((ran + 1))
+        else
+            warn "msftrecon produced no output"
+            skipped=$((skipped + 1))
+        fi
+        rm -f "$msft_out"
+    else
+        warn "msftrecon missing — skipped (./install.sh)"
+        skipped=$((skipped + 1))
+    fi
+
+    # --- Scopify (needs unfurl for the company name) ---
+    local scop_script="$tools_dir/Scopify/scopify.py"
+    if [ -f "$scop_script" ] && [ -n "$act_scop" ]; then
+        if command -v unfurl >/dev/null 2>&1; then
+            local company
+            company="$(unfurl format %r <<< "$domain" 2>/dev/null || printf '%s' "$domain")"
+            (
+                repair_venv_python "$act_scop"
+                source "$act_scop"
+                python3 "$scop_script" -c "$company"
+            ) >"$sdir/scopify.txt" 2>&1 || true
+            if [ -s "$sdir/scopify.txt" ]; then
+                ran=$((ran + 1))
+            else
+                warn "Scopify produced no output"
+                skipped=$((skipped + 1))
+            fi
+        else
+            warn "unfurl not installed — Scopify skipped"
+            skipped=$((skipped + 1))
+        fi
+    else
+        warn "Scopify missing — skipped (./install.sh)"
+        skipped=$((skipped + 1))
+    fi
+
+    # --- Spoofy (SPF / DMARC / DKIM analysis) ---
+    local spoof_script="$tools_dir/Spoofy/spoofy.py"
+    if [ -f "$spoof_script" ] && [ -n "$act_spoof" ]; then
+        (
+            repair_venv_python "$act_spoof"
+            source "$act_spoof"
+            cd "$tools_dir/Spoofy" || exit 1
+            python3 "$spoof_script" -d "$domain"
+        ) >"$sdir/spoof.txt" 2>&1 || true
+        if [ -s "$sdir/spoof.txt" ]; then
+            ran=$((ran + 1))
+        else
+            warn "Spoofy produced no output"
+            skipped=$((skipped + 1))
+        fi
+    else
+        warn "Spoofy missing — skipped (./install.sh)"
+        skipped=$((skipped + 1))
+    fi
+
+    # --- cloud_enum (AWS / Azure / GCP resource hunt) ---
+    local cloud_script="$tools_dir/cloud_enum/cloud_enum.py"
+    if [ -f "$cloud_script" ] && [ -n "$act_cloud" ]; then
+        local company mutations brute
+        company="$(unfurl format %r <<< "$domain" 2>/dev/null || printf '%s' "$domain" | awk -F. '{print $(NF-1)}')"
+        mutations="$tools_dir/cloud_enum/enum_tools/fuzz.txt"
+        brute="$mutations"
+        if [ ! -f "$mutations" ]; then
+            mutations="$cloud_script"
+            brute="$cloud_script"
+        fi
+        local ce_tmp="$sdir/.cloud_enum.tmp"
+        (
+            repair_venv_python "$act_cloud"
+            source "$act_cloud"
+            PYTHONWARNINGS=ignore python3 "$cloud_script" \
+                -k "$company" \
+                -k "$domain" \
+                -k "${domain%%.*}" \
+                -t 50 \
+                -m "$mutations" \
+                -b "$brute" \
+                -qs 2>/dev/null
+        ) >"$ce_tmp" 2>&1 || true
+        if command -v anew >/dev/null 2>&1; then
+            anew -q "$sdir/cloud_enum.txt" < "$ce_tmp" >/dev/null 2>&1 || true
+        else
+            cat "$ce_tmp" >> "$sdir/cloud_enum.txt" 2>/dev/null || true
+        fi
+        rm -f "$ce_tmp"
+        if [ -s "$sdir/cloud_enum.txt" ]; then
+            ran=$((ran + 1))
+        else
+            info "cloud_enum: no cloud resources found"
+            ran=$((ran + 1))
+        fi
+    else
+        warn "cloud_enum missing — skipped (./install.sh)"
+        skipped=$((skipped + 1))
+    fi
+
+    local elapsed=$(( $(now_s) - t0 ))
+    if [ "$ran" -gt 0 ]; then
+        ok "03-intel/ · ${ran} module(s) produced output · ${skipped} skipped (${elapsed}s)"
+        note_result "ok" "3 · Intel" "03-intel/ · ${ran} ok / ${skipped} skipped"
+    elif [ "$skipped" -gt 0 ]; then
+        warn "03-intel/ · all modules skipped or empty — see recon.log"
+        note_result "skip" "3 · Intel" "tools missing/empty — run ./install.sh"
+    else
+        err "03-intel/ failed — see recon.log"
+        note_result "fail" "3 · Intel" "failed — see recon.log"
+    fi
+}
+
+# ================================================================
+#  Step 4 — OSINT (theHarvester: subdomains + emails)
+#  openswarm phase-osint.sh parity: same source sets, same -n -r -f runs,
+#  same JSON extraction → output filenames.
+#  output → recon/<domain>/04-osint/
+# ================================================================
+
+# theHarvester runner — $1=sdir $2=basename $3=sources $4=label $5=harv_bin
+# (binary ladder resolved by step_osint; uv sync may not create an entry point)
+_run_harvester() {
+    local osint_dir="$1" base="$2" sources="$3" label="$4" harv_bin="$5"
+    info "theHarvester (${label}) — sources: ${sources}"
+    (
+        cd "$osint_dir" || exit 1
+        if printf '%s' "$harv_bin" | grep -q " "; then
+            eval "$harv_bin" -d "$DOMAIN" -b "$sources" -n -r -f "$base"
+        else
+            "$harv_bin" -d "$DOMAIN" -b "$sources" -n -r -f "$base"
+        fi
+    ) 2>&1 | tee -a "$osint_dir/theharvester.log"
+    return "${PIPESTATUS[0]}"
+}
+
+# JSON field extraction — $1=json_file $2=output_file $3=key
+_extract_json_field() {
+    local json_file="$1" output_file="$2" key="$3"
+    if [ ! -f "$json_file" ]; then
+        return 1
+    fi
+    python3 - "$json_file" "$key" "$output_file" <<'PY' 2>&1 | tee -a "$(dirname "$output_file")/parse.log"
+import json, sys
+json_file, key, output_file = sys.argv[1], sys.argv[2], sys.argv[3]
+try:
+    with open(json_file) as f:
+        data = json.load(f)
+    items = data.get(key, [])
+    with open(output_file, 'a') as out:
+        for item in items:
+            out.write(str(item) + '\n')
+    print('  Extracted ' + str(len(items)) + ' ' + key)
+except Exception as e:
+    print('Parse error (' + json_file + '): ' + str(e), file=sys.stderr)
+PY
+}
+
+step_osint() {
+    local t0; t0=$(now_s)
+    local sdir_rel="$OUTDIR/04-osint"
+    mkdir -p "$sdir_rel"
+    local sdir; sdir="$(cd "$sdir_rel" && pwd)"
+    local harvester_dir="${HARVESTER_DIR:-$HOME/theHarvester}"
+
+    if [ ! -d "$harvester_dir/.git" ]; then
+        warn "Step 4 SKIPPED: theHarvester not found at ${harvester_dir} (run ./install.sh)"
+        note_result "skip" "4 · OSINT" "theHarvester missing — run ./install.sh"
+        return 0
+    fi
+
+    # binary ladder (uv sync doesn't always create an entry point)
+    local harv_bin=""
+    if [ -f "$harvester_dir/.venv/bin/theHarvester" ]; then
+        harv_bin="$harvester_dir/.venv/bin/theHarvester"
+    elif command -v theHarvester >/dev/null 2>&1; then
+        harv_bin="theHarvester"
+    elif [ -f "$harvester_dir/.venv/bin/python3" ]; then
+        if command -v uv >/dev/null 2>&1; then
+            harv_bin="uv run --directory \"$harvester_dir\" theHarvester"
+        else
+            harv_bin="\"$harvester_dir/.venv/bin/python3\" -m theHarvester"
+        fi
+    fi
+    if [ -z "$harv_bin" ]; then
+        warn "Step 4 SKIPPED: theHarvester binary not found (run ./install.sh)"
+        note_result "skip" "4 · OSINT" "theHarvester binary missing — run ./install.sh"
+        return 0
+    fi
+
+    info "04-osint/ → ${sdir}"
+    # fresh-run hygiene
+    rm -f "$sdir/theharvester_subdomains.json" "$sdir/theharvester_emails.json"
+    : > "$sdir/subdomains.txt"
+    : > "$sdir/emails.txt"
+    : > "$sdir/theharvester.log"
+
+    # supported sources as of theHarvester 4.11.1 (openswarm phase-osint.sh)
+    local SUB_SOURCES="crtsh,rapiddns,subdomaincenter,hackertarget,otx,urlscan,dnsdumpster,bevigil,certspotter,bufferoverun,threatcrowd,virustotal,waybackarchive,commoncrawl,securityTrails,chaos,fullhunt,projectdiscovery,robtex"
+    local EMAIL_SOURCES="yahoo,duckduckgo,hunter,intelx,haveibeenpwned,hudsonrock,leakix,leaklookup,mojeek,tomba"
+
+    _run_harvester "$sdir" "theharvester_subdomains" "$SUB_SOURCES" "subdomains" "$harv_bin" || true
+    _run_harvester "$sdir" "theharvester_emails" "$EMAIL_SOURCES" "emails" "$harv_bin" || true
+
+    _extract_json_field "$sdir/theharvester_subdomains.json" "$sdir/subdomains.txt" "hosts" || true
+    _extract_json_field "$sdir/theharvester_emails.json" "$sdir/emails.txt" "emails" || true
+
+    sort -u -o "$sdir/subdomains.txt" "$sdir/subdomains.txt" 2>/dev/null || true
+    sort -u -o "$sdir/emails.txt" "$sdir/emails.txt" 2>/dev/null || true
+
+    local nsub=0 nmail=0
+    nsub=$(wc -l < "$sdir/subdomains.txt" 2>/dev/null | tr -d ' ' || printf '0')
+    nmail=$(wc -l < "$sdir/emails.txt" 2>/dev/null | tr -d ' ' || printf '0')
+
+    local elapsed=$(( $(now_s) - t0 ))
+    if [ -f "$sdir/theharvester_subdomains.json" ] || [ -f "$sdir/theharvester_emails.json" ]; then
+        ok "04-osint/ · ${nsub} subdomains · ${nmail} emails (${elapsed}s)"
+        note_result "ok" "4 · OSINT" "04-osint/ · ${nsub} subdomains · ${nmail} emails"
+    else
+        err "theHarvester produced no JSON output — see 04-osint/theharvester.log"
+        note_result "fail" "4 · OSINT" "no output — see 04-osint/theharvester.log"
     fi
 }
 
@@ -1104,34 +1444,40 @@ step_wappalyzer
 step_banner 2 "DNS + WHOIS (dig / whois / nslookup)"
 step_dns_whois
 
-step_banner 3 "Port scan (nmap · 4 stages)"
+step_banner 3 "Passive intel (whois · msftrecon · Scopify · Spoofy · cloud_enum)"
+step_intel
+
+step_banner 4 "OSINT (theHarvester — subdomains + emails)"
+step_osint
+
+step_banner 5 "Port scan (nmap · 4 stages)"
 step_nmap
 
-step_banner 4 "Certificate Transparency (ctfr)"
+step_banner 6 "Certificate Transparency (ctfr)"
 step_ctfr
 
-step_banner 5 "Subdomain enumeration (subenum)"
+step_banner 7 "Subdomain enumeration (subenum)"
 step_subenum
 
-step_banner 6 "DNS bruteforce (puredns + massdns)"
+step_banner 8 "DNS bruteforce (puredns + massdns)"
 step_puredns
 
-step_banner 7 "Vhost fuzzing (ffuf)"
+step_banner 9 "Vhost fuzzing (ffuf)"
 step_vhost_ffuf
 
-step_banner 8 "Zone transfer (AXFR)"
+step_banner 10 "Zone transfer (AXFR)"
 step_zone_transfer
 
-step_banner 9 "Directory bruteforce (ffuf)"
+step_banner 11 "Directory bruteforce (ffuf)"
 step_dirbust
 
-step_banner 10 "Public files (robots / security.txt / sitemaps)"
+step_banner 12 "Public files (robots / security.txt / sitemaps)"
 step_robots_sitemap
 
-step_banner 11 "Web crawling (waymore · gau · hakrawler · katana · gospider)"
+step_banner 13 "Web crawling (waymore · gau · hakrawler · katana · gospider)"
 step_crawl
 
-step_banner 12 "High-value paths (ffuf · secrets / disclosure / juicy files)"
+step_banner 14 "High-value paths (ffuf · secrets / disclosure / juicy files)"
 step_highvalue
 
 # ---------------------------------------------------------------

@@ -1,7 +1,7 @@
 #!/bin/bash
 # gf-extract.sh — standalone gf-pattern URL classifier.
 # Manual Phase-4 companion to filter.sh: run AFTER filter.sh, BEFORE copying
-# to the openswarm engagement (see prompts/phase4-skip-prompt.md).
+# to the openswarm engagement (see prompts/phase3-3b-4-skip-prompt.md).
 #
 # Usage:
 #   ./gf-extract.sh [input_file] [output_dir]

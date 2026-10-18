@@ -5,6 +5,7 @@
 # is already installed; only missing components get installed. Markers:
 #   ~/ctfr/venv/.deps-ok      (ctfr requirements done)
 #   ~/subenum/.install-done   (subenum's own install.sh done)
+# Intel/OSINT tools (steps 3-4) are existence-checked (.git / binary) too.
 # Wordlists ship with the repo; GF patterns are synced into ~/.gf.
 set -euo pipefail
 
@@ -218,6 +219,93 @@ else
     echo "[+] subenum: already present (${SUBENUM_DIR}) — skipping its install"
     echo "    (repair manually if needed: cd ${SUBENUM_DIR} && ./install.sh)"
     touch "$SUBENUM_DIR/.install-done"
+fi
+
+# ================================================================
+#  unfurl — company-name extraction for Scopify / cloud_enum / whois (step 3)
+# ================================================================
+echo "[*] unfurl"
+if command -v unfurl >/dev/null 2>&1 || [ -x "$HOME/go/bin/unfurl" ]; then
+    echo "[+] unfurl: already installed"
+elif command -v go >/dev/null 2>&1; then
+    if go install github.com/tomnomnom/unfurl@latest && \
+       { command -v unfurl >/dev/null 2>&1 || [ -x "$HOME/go/bin/unfurl" ]; }; then
+        echo "[+] unfurl: installed (~/go/bin/unfurl)"
+    else
+        echo "[!] unfurl: install FAILED — Scopify will skip at step 3"
+    fi
+else
+    echo "[-] unfurl: go not found — skipped (Scopify will skip at step 3)"
+fi
+
+# ================================================================
+#  Intel + OSINT tooling (steps 3-4; openswarm install.sh parity)
+#  msftrecon · Scopify · Spoofy · cloud_enum → ~/.local/bin/<repo>/venv
+#  theHarvester → ~/theHarvester/.venv          (uv-based, check-first)
+# ================================================================
+echo "[*] intel/OSINT tools (steps 3-4)"
+if ! command -v uv >/dev/null 2>&1; then
+    echo "[-] uv not found — intel tools skipped (msftrecon/Scopify/Spoofy/cloud_enum/theHarvester)"
+    echo "    install uv, then re-run ./install.sh:"
+    echo "    curl -LsSf https://astral.sh/uv/install.sh | sh"
+else
+    TOOLS_DIR="$HOME/.local/bin"
+    mkdir -p "$TOOLS_DIR"
+
+    install_intel_repo() {
+        local repo="$1"
+        local github_path="$2"
+        local target_dir="$TOOLS_DIR/$repo"
+
+        if [ -d "$target_dir/.git" ]; then
+            echo "[+] ${repo}: already installed"
+            return 0
+        fi
+
+        echo "[*] ${repo} — installing → ${target_dir}..."
+        if ! git clone --filter="blob:none" "https://github.com/$github_path" "$target_dir" 2>/dev/null; then
+            echo "[!] ${repo}: clone FAILED — skipped (step 3 will report skip)"
+            rm -rf "$target_dir" 2>/dev/null || true
+            return 0
+        fi
+
+        if [ -f "$target_dir/requirements.txt" ] || [ -f "$target_dir/pyproject.toml" ]; then
+            uv venv "$target_dir/venv" &>/dev/null || true
+            uv pip install --python "$target_dir/venv/bin/python" \
+                -r "${target_dir}/requirements.txt" 2>/dev/null || \
+            uv pip install --python "$target_dir/venv/bin/python" \
+                dnspython requests requests-futures 2>/dev/null || true
+        fi
+
+        echo "[+] ${repo}: installed"
+        return 0
+    }
+
+    install_intel_repo "msftrecon" "Arcanum-Sec/msftrecon"
+    install_intel_repo "Scopify" "Arcanum-Sec/Scopify"
+    install_intel_repo "Spoofy" "MattKeeley/Spoofy"
+    install_intel_repo "cloud_enum" "initstring/cloud_enum"
+
+    # theHarvester (email/subdomain OSINT — uv sync + editable install)
+    echo "[*] theHarvester"
+    if [ -d "$HOME/theHarvester/.git" ]; then
+        if [ ! -f "$HOME/theHarvester/.venv/bin/theHarvester" ] && ! command -v theHarvester >/dev/null 2>&1; then
+            echo "[*] theHarvester binary missing — restoring entry point..."
+            ( cd "$HOME/theHarvester" && uv pip install -e . ) 2>/dev/null || true
+            echo "[+] theHarvester entry point restored (best effort)"
+        else
+            echo "[+] theHarvester: already installed"
+        fi
+    else
+        echo "[*] theHarvester — installing → $HOME/theHarvester..."
+        if git clone --depth 1 https://github.com/laramies/theHarvester.git "$HOME/theHarvester" 2>/dev/null; then
+            ( cd "$HOME/theHarvester" && uv sync && uv pip install -e . ) 2>/dev/null || true
+            echo "[+] theHarvester: installed (best effort)"
+        else
+            echo "[!] theHarvester: clone FAILED — skipped (step 4 will report skip)"
+            rm -rf "$HOME/theHarvester" 2>/dev/null || true
+        fi
+    fi
 fi
 
 # ================================================================

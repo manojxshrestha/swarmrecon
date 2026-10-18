@@ -144,16 +144,16 @@ Notes:
 
 ### Step 13 in detail
 
-1. `waymore -i <domain> -mode U` (venv at `~/waymore`) → root `wayurls.txt`
-2. `echo <domain> | gau --threads 10 --subs | anew` → root `gauurls.txt`
-3. `cat wayurls gauurls | uro | sort -u` → root `waygauurls.txt`
-4. `cat https-subs.txt | hakrawler -subs -u -d 3` → root `hakcrawlurls.txt`
-5. `cat https-subs.txt | katana -d 3 -jc -timeout 15 -c 20 | anew` → root `cleansubskatanaurls.txt`
-6. `gospider -S https-subs.txt -o gooutput/ -c 10 -d 3 -t 20`
-7. `extracturls.sh -f gooutput/ -d <domain>` → root `alivesubsurls.txt`
-8. merge of ③④⑤⑦ via `uro` → root **`merged-crawl.txt`**
-9. `filter.sh` (liveness + param/API/IDOR classification) → `check/`
-10. `gf-extract.sh check/param-urls.txt check/gf` → `check/gf/gf-*.txt`
+1. `cd ~/waymore && waymore -i <domain> -mode U -oU wayurls.txt` (venv activated, runs inside `~/waymore`, stale `wayurls.txt` removed first) → **moved** to root `wayurls.txt`
+2. `echo <domain> | gau --threads 10 --subs | anew gauurls.txt` (no `anew` → plain `> gauurls.txt`) → root `gauurls.txt`
+3. `cat wayurls.txt gauurls.txt | uro | sort -u > waygauurls.txt` (only the inputs that exist; no `uro` → `sort -u` alone) → root `waygauurls.txt`
+4. `cat https-subs.txt | hakrawler -subs -u -d 3 > hakcrawlurls.txt` → root `hakcrawlurls.txt`
+5. `cat https-subs.txt | katana -d 3 -jc -timeout 15 -c 20 | anew cleansubskatanaurls.txt` (no `anew` → plain `> cleansubskatanaurls.txt`) → root `cleansubskatanaurls.txt`
+6. `gospider -S https-subs.txt -o gooutput/ -c 10 -d 3 -t 20` → `gooutput/`
+7. `extracturls.sh -f gooutput/ -d <domain>` (requires `dnsx` + `httpx`) → writes into `gooutput/`, then `alivesubsurls.txt` is **moved** to root
+8. `cat waygauurls.txt cleansubskatanaurls.txt hakcrawlurls.txt alivesubsurls.txt | uro > merged-crawl.txt` (missing inputs skipped with a warning; no `uro` → `sort -u`) → root **`merged-crawl.txt`**
+9. `cd recon/<domain> && echo <domain> | filter.sh` (liveness + param/API/IDOR classification; cwd must be the recon dir so its default input `merged-crawl.txt` resolves) → `check/`
+10. `cd recon/<domain> && gf-extract.sh check/param-urls.txt check/gf` → `check/gf/gf-*.txt`
 
 ---
 
@@ -467,7 +467,7 @@ flowchart TD
     PortDec -->|"no"| S6
 
     S6["6. CT LOGS (ctfr)<br/>crt.sh subs + liveness<br/>→ 06-ctfr/"]:::phase --> S7
-    S7["7. SUBENUM<br/>multi-source gather + resolve<br/>final: https-subs.txt<br/>final: alive-domains.txt<br/>staging → subdomains/"]:::phase --> S8
+    S7["7. SUBENUM<br/>multi-source gather + resolve<br/>final: https-subs.txt<br/>final: alive-domains.txt<br/>staging subdomains/ — auto-removed"]:::phase --> S8
     S8["8. DNS BRUTEFORCE<br/>puredns + massdns<br/>→ 08-puredns/"]:::phase --> S9
     S9["9. VHOST FUZZING<br/>Host-header discovery<br/>→ 09-vhost/"]:::phase --> S10
     S10["10. ZONE TRANSFER<br/>axfr against NS list<br/>→ 10-zone-transfer/"]:::phase --> S11
@@ -484,7 +484,7 @@ flowchart TD
 **Key properties of this flow:**
 
 - **Fail-soft is the contract.** A missing tool prints the exact install hint (`./install.sh` / `go install …`) and records a *skip*; a failed step records *fail* + points at `recon.log`; neither stops the run — the summary table always prints and the script exits `0`.
-- **Root = final, numbered dirs = raw.** Only step 7's `https-subs.txt` + `alive-domains.txt` and step 13's seven crawl files are final; `01-…` through `14-high-value/` and `gooutput/` are raw material. `subdomains/` is step-7 staging and ends empty after the merge.
+- **Root = final, numbered dirs = raw.** Only step 7's `https-subs.txt` + `alive-domains.txt` and step 13's seven crawl files are final; `01-…` through `14-high-value/` and `gooutput/` are raw material. `subdomains/` is step-7 staging only — step 7 `rmdir`s it at the end (when empty), so it never lingers.
 - **Step 13 never dies wholesale.** Each crawl tool, `filter.sh`, and `gf-extract.sh` runs as an independent sub-step — one missing tool skips its slice only. `check/` holds the filter classification (`crawledurls` · `param-urls` · `httpx-raw` · `api-candidates` · `idor-candidates` · `api-param-candidates` · `idor-param-candidates`) plus `gf/gf-*.txt` pattern classes; `gooutput/` holds gospider raw + extracturls intermediates.
 - **The manual branch stays manual.** masscan/nmap/brutespray needs interactive `sudo` and an explicit credential-guessing decision, so it's a deliberate side path off step 5 — never automated in the script.
 - **Step 11 stays manual too.** Directory bruteforce is outside the pipeline — the run finishes with a *skip* row and a pointer to `./dir-bruteforce.sh`, which prompts for URL + wordlist and writes `directories/<host>/`. Choosing when (and how hard) to brute-force stays an explicit decision.
@@ -503,7 +503,7 @@ when you invoke it (step 11 is manual):
 | `extracturls.sh` | `./extracturls.sh -f <gospider_folder> -d <domain>` | Extracts + liveness-probes subdomains from crawler output. Requires `dnsx` + `httpx`. |
 | `filter.sh` | `echo <domain> \| ./filter.sh [input]` | Interactive domain prompt (fed via stdin). Defaults to `merged-crawl.txt` in CWD; writes 6 category files to `check/`. Keeps WAF/403/401 alive, drops 404s/errors; strips fragments + tracking params; classifies API/IDOR candidates. |
 | `gf-extract.sh` | `./gf-extract.sh [input_file] [out_dir]` | Defaults: `check/param-urls.txt` → `check/gf/`. `$1` must be a **file** (not a directory). Only patterns with hits produce files. |
-| `sync-gf-patterns.sh` | `./sync-gf-patterns.sh` | Copies `gf-patterns/*.json` → `~/.gf` (skips identical, manifest excluded, prunes stale). Called by `install.sh`; run standalone after editing patterns. |
+| `sync-gf-patterns.sh` | `./sync-gf-patterns.sh` | Copies `gf-patterns/*.json` → `~/.gf` (skips identical, index excluded, prunes **only this repo's** previously-synced files — ownership-aware for shared `~/.gf`). Called by `install.sh`; run standalone after editing patterns. |
 | `dir-bruteforce.sh` | `./dir-bruteforce.sh` (interactive) · `./dir-bruteforce.sh --url <url> --wordlist <path>` | ffuf path discovery — **never auto-run** by the pipeline (step 11 = *skip*). Profiles `--profile light\|standard\|deep`, plus `--dry-run`, `--force`, `--report-only`, `--target <domain>` → merges hosts under `directories/<domain>/`. Output: `directories/<host>/` (evidence + reports). |
 
 ---
@@ -520,13 +520,17 @@ when you invoke it (step 11 is manual):
 
 ### `gf-patterns/` (127 files)
 
-Git-tracked source of truth for `gf(1)` patterns (126 real patterns +
-`category-index.json` manifest). `gf` itself only reads `~/.gf`, so:
+Git-tracked source of truth for `gf(1)` patterns (125 real patterns +
+`category-index.json` index + this README = 127 files). `gf` itself only
+reads `~/.gf`, so:
 
 - `./install.sh` → runs `./sync-gf-patterns.sh`: **copies missing/changed
   patterns** into `~/.gf/` (identical files are skipped untouched — safe to
-  re-run), skips `category-index.json` (manifest), and prunes stale `~/.gf`
-  files no longer shipped. Repo stays the source of truth.
+  re-run), skips `category-index.json` (index), and prunes **only files this
+  repo previously synced** (tracked in `~/.gf/.swarmrecon-manifest`) that are
+  no longer shipped. `~/.gf` is shared with openswarm — its patterns
+  (`clickjacking`, `soap`, …) and user files are never touched. Repo stays
+  the source of truth.
 - Rerun standalone anytime: `./sync-gf-patterns.sh` then `gf -list` to verify.
 
 ---

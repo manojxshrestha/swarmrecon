@@ -624,7 +624,8 @@ step_robots_sitemap() {
 #  copied to: recon/<domain>/subdomains/
 #  AFTER the CT merges, BOTH final files are MOVED UP to recon/<domain>/:
 #  https-subs.txt and alive-domains.txt (user: both belong in
-#  recon/target.com/ directory — subdomains/ is only the staging area)
+#  recon/target.com/ directory — subdomains/ is only the staging area,
+#  rmdir'd at the end of the step so an empty dir never lingers)
 # ================================================================
 step_subenum() {
     local subenum_dir="$HOME/subenum"
@@ -737,6 +738,10 @@ step_subenum() {
         err "FAILED (exit=$?) — see ${LOG}"
         note_result "fail" "7 · Subenum" "failed — see recon.log"
     fi
+
+    # staging served its purpose — drop it when empty so it never lingers
+    # (rmdir only succeeds on an empty dir; files stuck on a failed mv stay visible)
+    rmdir "$sdir" 2>/dev/null || true
 }
 
 # ================================================================

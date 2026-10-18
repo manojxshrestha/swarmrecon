@@ -9,9 +9,11 @@
 # Files are COPIED (not moved) so the repo stays the source of truth and
 # `git status` stays clean.
 #
-# category-index.json is a MANIFEST (no flags/patterns) — never installed.
-# Stale ~/.gf/*.json files not shipped in this repo are pruned
-# (e.g. old names like img-traversal.json / jsvar.json / rce.json).
+# category-index.json is an INDEX (no flags/patterns) — never installed.
+# ~/.gf is SHARED (openswarm + swarmrecon both sync there, plus user files):
+# prune is ownership-aware — only files THIS repo recorded in its
+# ~/.gf/.<tool>-manifest and no longer ships are removed; anything the other
+# repo's manifest claims (or user files) are never touched.
 #
 # Usage:
 #   ./sync-gf-patterns.sh
@@ -24,6 +26,8 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 REPO_DIR="$SCRIPT_DIR"
 SRC="$REPO_DIR/gf-patterns"
 GF_DIR="$HOME/.gf"
+TOOL_ID="swarmrecon"
+MANIFEST="$GF_DIR/.${TOOL_ID}-manifest"
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; CYAN='\033[0;36m'; NC='\033[0m'
 log()  { echo -e "${GREEN}[+]${NC} $1"; }
@@ -59,16 +63,35 @@ for f in "$SRC"/*.json; do
   INSTALLED=$((INSTALLED + 1))
 done
 
-# ── Prune stale ~/.gf patterns not shipped anymore ───────────────────
+# ── Ownership-aware prune: only files THIS repo synced before ────────
+# ~/.gf is shared (openswarm + swarmrecon both write here, plus user
+# patterns) — delete only names recorded in OUR manifest that we no longer
+# ship AND that the other repo's manifest does not claim.
 PRUNED=0
-for old in "$GF_DIR"/*.json; do
-  [ -f "$old" ] || continue
-  name=$(basename "$old")
-  [ -f "$SRC/$name" ] && continue
-  rm -f "$old"
-  PRUNED=$((PRUNED + 1))
-  warn "Removed stale ~/.gf/$name (no longer shipped)"
-done
+if [ -f "$MANIFEST" ]; then
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    [ -f "$SRC/$name" ] && continue            # still shipped → keep
+    claimed=0
+    for other in "$GF_DIR"/.*-manifest; do
+      { [ -f "$other" ] && [ "$other" != "$MANIFEST" ]; } || continue
+      grep -qxF "$name" "$other" 2>/dev/null && claimed=1
+    done
+    [ "$claimed" -eq 1 ] && continue           # the other repo owns it
+    [ -f "$GF_DIR/$name" ] || continue
+    rm -f "$GF_DIR/$name"
+    PRUNED=$((PRUNED + 1))
+    warn "Removed stale ~/.gf/$name (no longer shipped by $TOOL_ID)"
+  done < "$MANIFEST"
+fi
+
+# ── Record current ownership for the next run's prune ────────────────
+for f in "$SRC"/*.json; do
+  name=$(basename "$f")
+  [ "$name" = "category-index.json" ] && continue
+  printf '%s\n' "$name"
+done > "$MANIFEST.tmp"
+mv -f "$MANIFEST.tmp" "$MANIFEST"
 
 TOTAL=$(ls "$GF_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ')
 if [ "$INSTALLED" -eq 0 ] && [ "$PRUNED" -eq 0 ]; then

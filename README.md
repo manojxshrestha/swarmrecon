@@ -170,29 +170,30 @@ fast port discovery to service-aware credential guessing using
 
 ```mermaid
 flowchart LR
-    classDef src fill:#0f172a,stroke:#38bdf8,stroke-width:1.5px,color:#e2e8f0
-    classDef tool fill:#1e1b4b,stroke:#818cf8,stroke-width:1.5px,color:#e0e7ff
-    classDef artifact fill:#052e16,stroke:#4ade80,stroke-width:1.5px,color:#dcfce7
+    classDef entry fill:#1e1b4b,stroke:#818cf8,stroke-width:2px,color:#e0e7ff
+    classDef phase fill:#0f172a,stroke:#38bdf8,stroke-width:1.5px,color:#e2e8f0
     classDef decision fill:#451a03,stroke:#f59e0b,stroke-width:2px,color:#fde68a
+    classDef manual fill:#042f2e,stroke:#2dd4bf,stroke-width:1.5px,color:#ccfbf1
+    classDef artifact fill:#052e16,stroke:#4ade80,stroke-width:1.5px,color:#dcfce7
     classDef halt fill:#450a0a,stroke:#f87171,stroke-width:1.5px,color:#fecaca
 
-    IP["raw IP list<br/>$ipFile"]:::src
-    DOM["alive-domains.txt<br/>step 7 final"]:::src
+    IP["raw IP list<br/>$ipFile"]:::entry
+    DOM["alive-domains.txt<br/>step 7 final"]:::entry
 
     IP -->|"masscan<br/>-p1-65535 · --max-rate · -oG"| MS["masscan.log<br/>grepable IP:port/open"]:::artifact
     DOM -->|"dnmasscan<br/>resolve, then --top-ports -oG"| DN["dns.log + masscan.log<br/>domains → IPs → ports"]:::artifact
 
-    MS --> XIP["unique IPs —<br/>Host: lines, deduped"]:::tool
+    MS --> XIP["unique IPs —<br/>Host: lines, deduped"]:::phase
     DN --> XIP
-    MS --> XPT["unique open ports —<br/>/open matches, deduped"]:::tool
+    MS --> XPT["unique open ports —<br/>/open matches, deduped"]:::phase
     DN --> XPT
 
-    XIP --> NM["nmap -sV<br/>-iL ips -p ports -oG"]:::tool
+    XIP --> NM["nmap -sV<br/>-iL ips -p ports -oG"]:::phase
     XPT --> NM
     NM --> GN["nmap-scan.gnmap<br/>22/open/tcp//ssh/OpenSSH 8.2p1/<br/>service names resolved"]:::artifact
 
     GN --> AUTH{"credential testing<br/>authorized?"}:::decision
-    AUTH -->|"yes — deliberate decision"| BS["brutespray -f (medusa)<br/>SSH · FTP · MySQL · RDP ..."]:::tool
+    AUTH -->|"yes — deliberate decision"| BS["brutespray -f (medusa)<br/>SSH · FTP · MySQL · RDP ..."]:::manual
     AUTH -->|"no"| HOLD["stop at inventory —<br/>ports + services only"]:::halt
     BS --> RES["scan-results/<br/>SecLists default-credentials<br/>+ custom wordlists"]:::artifact
 
@@ -299,7 +300,7 @@ go install github.com/x90skysn3k/brutespray/v2@latest
 brutespray -f nmap-scan.gnmap
 
 # Use the -o flag to set a custom path
-brutespray -f nmap.gnmap -o scan-results
+brutespray -f nmap-scan.gnmap -o scan-results
 ```
 
 ⚠️ Only against systems you own or have **explicit authorization** to test.
@@ -589,8 +590,11 @@ reads `~/.gf`, so:
 - **Fail-soft**: guards check every tool before running; results land in the summary
   table instead of exiting. The script exits `0` after printing it regardless of
   individual step results.
-- **Fresh-run hygiene**: steps that produce files delete their previous outputs
-  before running, so a failed step can never pass off stale results as new.
+- **Fresh-run hygiene**: by the time a step's tools run it has cleared or
+  truncated every file it owns (up-front `rm` / `: >`, or write-time `>`), so a
+  failed run can never pass off stale results as new. Outputs that feed later
+  steps (ctfr, subenum, crawl + merged files) are cleared *before their guards*,
+  so even a skipped re-run can't leak old data into a later merge.
 - **Exit-code semantics**: steps built from informational commands (DNS queries
   that legitimately return NXDOMAIN, `curl` of possibly-absent files) are judged by
   *output existence*, not raw exit codes — that's why some blocks are written as

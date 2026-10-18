@@ -138,6 +138,10 @@ repair_venv_python() {  # $1 = activate path
 #  output → recon/<domain>/01-wappalyzer/
 # ================================================================
 step_wappalyzer() {
+    # fresh run: drop the previous JSON before the guard — wappalyzer writes
+    # -oJ only on success, so a failed/skipped step must not leave stale tech data
+    rm -f "$OUTDIR/01-wappalyzer/technologies.json"
+
     if ! command -v wappalyzer >/dev/null 2>&1; then
         warn "Step 1 SKIPPED: wappalyzer not found (run ./install.sh)"
         note_result "skip" "1 · Wappalyzer" "wappalyzer not installed"

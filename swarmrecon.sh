@@ -228,10 +228,19 @@ step_dns_whois() {
             whois "$ip" |
                 grep -Ei '^(CIDR|NetRange|inetnum|route|OrgName|org-name|netname|origin|descr):'
         done > "$sdir/whois-ips.txt"
+    :  # verdict = produced files (fail-soft: transient whois/network blips must not fail the step)
     } >>"$LOG" 2>&1; then
-        ok "done in $(( $(now_s) - t0 ))s → 02-dns-whois/ (13 files)"
-        info "A: $(paste -sd' ' "$sdir/dns-a.txt" 2>/dev/null | head -c 200)"
-        note_result "ok" "2 · DNS + WHOIS" "02-dns-whois/ · 13 files"
+        local nfiles
+        nfiles=$(find "$sdir" -type f -size +0c | wc -l)
+        [ -s "$sdir/whois-domain.txt" ] || warn "whois unreachable (transient network?) — whois-domain.txt empty"
+        if [ "$nfiles" -eq 0 ]; then
+            err "FAILED — no DNS/WHOIS output produced — see ${LOG}"
+            note_result "fail" "2 · DNS + WHOIS" "failed — see recon.log"
+        else
+            ok "done in $(( $(now_s) - t0 ))s → 02-dns-whois/ (${nfiles} files)"
+            info "A: $(paste -sd' ' "$sdir/dns-a.txt" 2>/dev/null | head -c 200)"
+            note_result "ok" "2 · DNS + WHOIS" "02-dns-whois/ · ${nfiles} files"
+        fi
     else
         err "FAILED (exit=$?) — see ${LOG}"
         note_result "fail" "2 · DNS + WHOIS" "failed — see recon.log"
@@ -239,8 +248,8 @@ step_dns_whois() {
 }
 
 # ================================================================
-#  Step 5 — Port scan (nmap)  [4-stage sequence per user]
-#  1 quick TCP -> 2 service/versions -> 3 all TCP ports -> 4 full + versions
+#  Step 5 — Port scan (nmap · single pass per user)
+#  nmap -Pn --open -sV -T4 --top-ports 1000 --min-rate 500 -vvv  (one run → nmap-full.txt)
 #  output → recon/<domain>/05-nmap/
 # ================================================================
 step_nmap() {
@@ -252,23 +261,21 @@ step_nmap() {
 
     local sdir="$OUTDIR/05-nmap"
     mkdir -p "$sdir"
-    info "4 stages: quick TCP -> -sV -> -p- -> -p- -sV (progress in recon.log)"
+    info "single pass: top-1000 TCP + version detect, -T4 --min-rate 500 (progress in recon.log)"
     local domain="$DOMAIN"
     local t0; t0=$(now_s)
 
+    # fresh run: don't leave legacy 4-stage files behind
+    rm -f "$sdir/nmap-quick.txt" "$sdir/nmap-version.txt" "$sdir/nmap-allports.txt" "$sdir/nmap-full.txt"
+
     if {
-        # Stage 1: Quick TCP scan
-        nmap -Pn --open "$domain" -oN "$sdir/nmap-quick.txt"
-        # Stage 2: Identify services and versions
-        nmap -Pn --open -sV "$domain" -oN "$sdir/nmap-version.txt"
-        # Stage 3: Check all TCP ports
-        nmap -Pn --open -p- "$domain" -oN "$sdir/nmap-allports.txt"
-        # Stage 4: Full TCP scan with service detection
-        nmap -Pn --open -p- -sV "$domain" -oN "$sdir/nmap-full.txt"
+        # single pass (user's command): top-1000 + service versions, fast timing
+        nmap -Pn --open -sV -T4 --top-ports 1000 --min-rate 500 -vvv "$domain" -oN "$sdir/nmap-full.txt"
     } >>"$LOG" 2>&1; then
         local nports
-        nports=$(grep -c '/tcp open' "$sdir/nmap-full.txt" 2>/dev/null || true)
-        ok "done in $(( $(now_s) - t0 ))s → 05-nmap/ (4 reports, ${nports:-0} open ports)"
+        # nmap pads columns: "80/tcp  open" (2 spaces) vs "443/tcp open" (1 space)
+        nports=$(grep -cE '/tcp[[:space:]]+open' "$sdir/nmap-full.txt" 2>/dev/null || true)
+        ok "done in $(( $(now_s) - t0 ))s → 05-nmap/ (1 report, ${nports:-0} open ports)"
         note_result "ok" "5 · Nmap port scan" "05-nmap/ · ${nports:-0} open ports"
     else
         err "FAILED (exit=$?) — see ${LOG}"
@@ -524,78 +531,6 @@ step_zone_transfer() {
 }
 
 # ================================================================
-#  Step 11 — Directory bruteforcing (ffuf)
-#  1) baseline: Content-Length of a random non-existent path (curl -I)
-#  2) ffuf -fc 403,404 -fs 0,<baseline_CL> -mc 200,301,302 -t 100
-#  3) jq -r '.results[].url' -> flat list
-#  (user example used -fs 0; baseline CL added per user: "we need to see
-#   on its too filter size" -> dynamic, like the vhost step)
-#  output → recon/<domain>/11-directories/
-# ================================================================
-step_dirbust() {
-    local miss=0
-    for t in ffuf curl jq; do
-        if ! command -v "$t" >/dev/null 2>&1; then
-            warn "Step 11 SKIPPED: $t not found (run ./install.sh / install manually)"
-            miss=1
-        fi
-    done
-    local wl="$WL_DIR/raft-medium-directories.txt"
-    if [ ! -s "$wl" ]; then
-        warn "Step 11 SKIPPED: ${wl} missing (ships with repo — check wordlists/)"
-        miss=1
-    fi
-    if [ "$miss" -ne 0 ]; then
-        note_result "skip" "11 · Directory bruteforce" "ffuf/curl/jq/wordlist missing"
-        return 0
-    fi
-
-    local sdir_rel="$OUTDIR/11-directories"
-    mkdir -p "$sdir_rel"
-    local sdir; sdir="$(cd "$sdir_rel" && pwd)"
-    local domain="$DOMAIN"
-    local t0; t0=$(now_s)
-
-    # --- baseline: what does a random non-existent path return? ---
-    curl -s -I "https://${domain}/asdkl3" \
-        > "$sdir/dir-baseline.txt" 2>>"$LOG" || true
-    local base_cl
-    base_cl=$(grep -i '^Content-Length:' "$sdir/dir-baseline.txt" 2>/dev/null \
-        | head -1 | grep -oE '[0-9]+' || true)
-
-    # -fs list: always filter empty bodies (user's -fs 0); add baseline
-    # error-page size when the server sent a Content-Length.
-    # (unlike vhost step, missing CL is NOT fatal here -> -fs 0 still valid)
-    local fs="0"
-    if [ -n "$base_cl" ]; then
-        fs="0,${base_cl}"
-        info "baseline CL=${base_cl} (/asdkl3) → -fs ${fs}"
-    else
-        warn "baseline: no Content-Length → using -fs 0 only"
-    fi
-
-    # fresh run: a failed ffuf must not feed jq a previous run's json
-    rm -f "$sdir/ffuf-directory.json" "$sdir/ffuf-directory.txt"
-
-    # --- ffuf (user's exact flags, dynamic -fs, outputs into step dir) ---
-    # '&&' so failed ffuf aborts the block instead of jq masking it
-    if {
-        ffuf -u "https://${domain}/FUZZ" -w "$wl" \
-            -fc 403,404 -fs "$fs" -mc 200,301,302 -t 100 \
-            -o "$sdir/ffuf-directory.json" -of json \
-        && jq -r '.results[].url' "$sdir/ffuf-directory.json" > "$sdir/ffuf-directory.txt"
-    } >>"$LOG" 2>&1; then
-        local nurls=0
-        nurls=$(grep -c 'http' "$sdir/ffuf-directory.txt" 2>/dev/null || true)
-        ok "done in $(( $(now_s) - t0 ))s → 11-directories/ (${nurls:-0} paths matched)"
-        note_result "ok" "11 · Directory bruteforce" "11-directories/ · ${nurls:-0} paths"
-    else
-        err "FAILED (exit=$?) — see ${LOG}"
-        note_result "fail" "11 · Directory bruteforce" "failed — see recon.log"
-    fi
-}
-
-# ================================================================
 #  Step 12 — Public files: robots.txt / security.txt / sitemaps
 #  (user's script; sections -> separate files, headers -> recon.log.
 #   robots.txt fetched ONCE then grepped locally for section 3 —
@@ -660,12 +595,20 @@ step_robots_sitemap() {
             -o /dev/null \
             -w 'HTTP: %{http_code} | Final URL: %{url_effective}\n' \
             "http://$domain" > "$sdir/http-redirect-check.txt"
+    :  # verdict = produced files (fail-soft: transient curl/network blips must not fail the step)
     } >>"$LOG" 2>&1; then
-        local n_adv=0 n_loc=0
+        local n_adv=0 n_loc=0 nfiles=0
         n_adv=$(grep -ci 'sitemap:' "$sdir/advertised-sitemaps.txt" 2>/dev/null || true)
         n_loc=$(grep -c 'http' "$sdir/sitemap-urls.txt" 2>/dev/null || true)
-        ok "done in $(( $(now_s) - t0 ))s → 12-robots-sitemap/ (advertised: ${n_adv:-0}, sitemap URLs: ${n_loc:-0})"
-        note_result "ok" "12 · robots/sitemap" "12-robots-sitemap/ · ${n_loc:-0} sitemap URLs"
+        nfiles=$(find "$sdir" -type f -size +0c | wc -l)
+        [ -s "$sdir/robots.txt" ] || warn "robots.txt fetch failed (curl error / network?) — 0 bytes"
+        if [ "$nfiles" -eq 0 ]; then
+            err "FAILED — all curls produced no output — see ${LOG}"
+            note_result "fail" "12 · robots/sitemap" "failed — see recon.log"
+        else
+            ok "done in $(( $(now_s) - t0 ))s → 12-robots-sitemap/ (advertised: ${n_adv:-0}, sitemap URLs: ${n_loc:-0})"
+            note_result "ok" "12 · robots/sitemap" "12-robots-sitemap/ · ${n_loc:-0} sitemap URLs"
+        fi
     else
         err "FAILED (exit=$?) — see ${LOG}"
         note_result "fail" "12 · robots/sitemap" "failed — see recon.log"
@@ -1094,8 +1037,8 @@ step_crawl() {
 #  Step 14 — High-value path hunt (user's exact ffuf invocation)
 #    purpose: secrets, information disclosure, endpoints, errors,
 #             juicy file extensions  (wordlists/high-value-paths.txt)
-#    base URL comes from the user's interactive prompt manually;
-#    in the script it is https://<domain>
+#    sources: https://<domain> (apex) + every host in step-7's
+#    alive-domains.txt (bare hosts); per-host ffuf, merged results
 # ================================================================
 step_highvalue() {
     local t0; t0=$(now_s)
@@ -1103,10 +1046,10 @@ step_highvalue() {
     mkdir -p "$sdir_rel"
     local sdir; sdir="$(cd "$sdir_rel" && pwd)"
     local wl="$WL_DIR/high-value-paths.txt"
-    local target="https://${DOMAIN}"
+    local targets=("https://${DOMAIN}")
 
     # fresh run: drop previous results so a skipped/failed rerun can't show stale hits
-    rm -f "$sdir/high-value-results.json" "$sdir/high-value-results.txt"
+    rm -f "$sdir"/high-value-*.json "$sdir/high-value-results.txt"
 
     local miss=0
     if ! command -v ffuf >/dev/null 2>&1; then
@@ -1122,15 +1065,62 @@ step_highvalue() {
         return 0
     fi
 
-    info "ffuf -w high-value-paths.txt -u ${target}/FUZZ -mc ... -ac -rate 5"
-    if ffuf \
-        -w "$wl" \
-        -u "${target%/}/FUZZ" \
-        -mc 200,301,302,401,403,500 \
-        -ac \
-        -rate 5 \
-        -o "$sdir/high-value-results.json" \
-        -of json >>"$LOG" 2>&1; then
+    # sources: apex (above) + every host in step-7's alive-domains.txt
+    local adoms="$OUTDIR/alive-domains.txt"
+    if [ -s "$adoms" ]; then
+        local h seen="|${DOMAIN}|"
+        while IFS= read -r h; do
+            h="${h#http://}"; h="${h#https://}"; h="${h%/}"
+            [ -z "$h" ] && continue
+            case "$seen" in *"|$h|"*) continue ;; esac
+            seen+="|$h|"
+            targets+=("https://$h")
+        done < "$adoms"
+    else
+        warn "alive-domains.txt missing/empty — step 14 covers apex only"
+    fi
+
+    info "ffuf -w high-value-paths.txt — ${#targets[@]} target(s): ${targets[*]}"
+    local t t_json
+    local -a t_files=()
+    for t in "${targets[@]}"; do
+        t_json="$sdir/high-value-$(printf '%s' "$t" | sed 's|^[a-zA-Z]*://||; s|[^A-Za-z0-9._-]|_|g').json"
+        ffuf \
+            -w "$wl" \
+            -u "${t%/}/FUZZ" \
+            -mc 200,301,302,401,403,500 \
+            -ac \
+            -rate 5 \
+            -o "$t_json" \
+            -of json >>"$LOG" 2>&1 || warn "ffuf exited nonzero for $t (network?) — see ${LOG}"
+        if [ -s "$t_json" ]; then
+            t_files+=("$t_json")
+        else
+            warn "no results file for $t"
+        fi
+    done
+
+    # merge per-host results into the contract pair (results.json/.txt)
+    if [ ${#t_files[@]} -eq 1 ]; then
+        cp "${t_files[0]}" "$sdir/high-value-results.json"
+    elif [ ${#t_files[@]} -gt 1 ] && command -v jq >/dev/null 2>&1; then
+        jq -s 'add' "${t_files[@]}" > "$sdir/high-value-results.json" \
+            || warn "jq merge failed — high-value-results.json may be partial"
+    elif [ ${#t_files[@]} -gt 1 ]; then
+        python3 - "$sdir/high-value-results.json" "${t_files[@]}" <<'PYEOF' \
+            || warn "python merge failed — high-value-results.json may be partial"
+import json, sys
+out = {"results": []}
+for f in sys.argv[2:]:
+    try:
+        out["results"].extend(json.load(open(f)).get("results", []))
+    except Exception:
+        pass
+json.dump(out, open(sys.argv[1], "w"))
+PYEOF
+    fi
+    # t_files=0 → no merge written; the verdict below reports "no results file"
+    if [ -s "$sdir/high-value-results.json" ]; then
         local nres=0
         if command -v jq >/dev/null 2>&1; then
             nres=$(jq -r '.results | length' "$sdir/high-value-results.json" 2>/dev/null || echo 0)
@@ -1146,7 +1136,7 @@ step_highvalue() {
         ok "done in $(( $(now_s) - t0 ))s → 14-high-value/high-value-results.json (${nres:-0} hits)"
         note_result "ok" "14 · High-value" "14-high-value/ · ${nres:-0} hits"
     else
-        err "ffuf FAILED (exit=$?) — see ${LOG}"
+        err "ffuf produced no results file (failed to run) — see ${LOG}"
         note_result "fail" "14 · High-value" "failed — see recon.log"
     fi
 }
@@ -1182,17 +1172,22 @@ step_intel() {
     info "03-intel/ → ${sdir}"
 
     # --- whois (plain, no venv) ---
+    # Query the FULL domain: unfurl %r is only the root label ("trybrowzer",
+    # not "trybrowzer.com") — a TLD-less whois returns nothing useful. (openswarm
+    # phase-intel.sh uses %r here too, but tees silently so the failure is hidden.)
+    # Verdict by output, not exit code: some whois servers exit non-zero while
+    # still printing a record.
     if command -v whois >/dev/null 2>&1; then
-        local whois_target="$domain"
-        if command -v unfurl >/dev/null 2>&1; then
-            whois_target="$(unfurl format %r <<< "$domain" 2>/dev/null || printf '%s' "$domain")"
-        fi
-        if whois "$whois_target" >>"$sdir/domain_info_general.txt" 2>>"$LOG"; then
+        local whois_out="$sdir/.whois.tmp"
+        whois "$domain" >"$whois_out" 2>>"$LOG" || true
+        if [ -s "$whois_out" ]; then
+            cat "$whois_out" >> "$sdir/domain_info_general.txt"
             ran=$((ran + 1))
         else
-            warn "whois returned nothing for ${whois_target}"
+            warn "whois returned nothing for ${domain}"
             skipped=$((skipped + 1))
         fi
+        rm -f "$whois_out"
     else
         warn "whois not installed — skipped"
         skipped=$((skipped + 1))
@@ -1405,8 +1400,11 @@ step_osint() {
     : > "$sdir/emails.txt"
     : > "$sdir/theharvester.log"
 
-    # supported sources as of theHarvester 4.11.1 (openswarm phase-osint.sh)
-    local SUB_SOURCES="crtsh,rapiddns,subdomaincenter,hackertarget,otx,urlscan,dnsdumpster,bevigil,certspotter,bufferoverun,threatcrowd,virustotal,waybackarchive,commoncrawl,securityTrails,chaos,fullhunt,projectdiscovery,robtex"
+    # valid per theHarvester 5.0.0 source_catalog.py (verified against the install):
+    #   threatcrowd removed in 5.x; chaos only selectable via projectdiscovery.
+    #   One unknown name → "Invalid source." and the whole run aborts.
+    # (openswarm phase-osint.sh still carries the 4.11.1 list incl. both — same bug.)
+    local SUB_SOURCES="crtsh,rapiddns,subdomaincenter,hackertarget,otx,urlscan,dnsdumpster,bevigil,certspotter,bufferoverun,virustotal,waybackarchive,commoncrawl,securityTrails,fullhunt,projectdiscovery,robtex"
     local EMAIL_SOURCES="yahoo,duckduckgo,hunter,intelx,haveibeenpwned,hudsonrock,leakix,leaklookup,mojeek,tomba"
 
     _run_harvester "$sdir" "theharvester_subdomains" "$SUB_SOURCES" "subdomains" "$harv_bin" || true
@@ -1414,6 +1412,9 @@ step_osint() {
 
     _extract_json_field "$sdir/theharvester_subdomains.json" "$sdir/subdomains.txt" "hosts" || true
     _extract_json_field "$sdir/theharvester_emails.json" "$sdir/emails.txt" "emails" || true
+    # superset vs openswarm: the email run's JSON also carries hosts (e.g. a lone
+    # trust.trybrowzer.com would be lost when the subdomain run aborts) — merge them
+    _extract_json_field "$sdir/theharvester_emails.json" "$sdir/subdomains.txt" "hosts" || true
 
     sort -u -o "$sdir/subdomains.txt" "$sdir/subdomains.txt" 2>/dev/null || true
     sort -u -o "$sdir/emails.txt" "$sdir/emails.txt" 2>/dev/null || true
@@ -1421,6 +1422,10 @@ step_osint() {
     local nsub=0 nmail=0
     nsub=$(wc -l < "$sdir/subdomains.txt" 2>/dev/null | tr -d ' ' || printf '0')
     nmail=$(wc -l < "$sdir/emails.txt" 2>/dev/null | tr -d ' ' || printf '0')
+
+    if grep -q "Invalid source" "$sdir/theharvester.log" 2>/dev/null; then
+        warn "theHarvester rejected source(s) — source list outdated for this version (see 04-osint/theharvester.log)"
+    fi
 
     local elapsed=$(( $(now_s) - t0 ))
     if [ -f "$sdir/theharvester_subdomains.json" ] || [ -f "$sdir/theharvester_emails.json" ]; then
@@ -1450,7 +1455,7 @@ step_intel
 step_banner 4 "OSINT (theHarvester — subdomains + emails)"
 step_osint
 
-step_banner 5 "Port scan (nmap · 4 stages)"
+step_banner 5 "Port scan (nmap · single pass)"
 step_nmap
 
 step_banner 6 "Certificate Transparency (ctfr)"
@@ -1468,8 +1473,11 @@ step_vhost_ffuf
 step_banner 10 "Zone transfer (AXFR)"
 step_zone_transfer
 
-step_banner 11 "Directory bruteforce (ffuf)"
-step_dirbust
+# Step 11 removed from the pipeline: directory bruteforce is manual now.
+# Run ./dir-bruteforce.sh interactively (prompts for URL + wordlist);
+# output lands in <swarmrecon-root>/directories/<host>/.
+info "Step 11 removed — run ./dir-bruteforce.sh manually for directory bruteforce"
+note_result "skip" "11 · Directory bruteforce" "manual — run ./dir-bruteforce.sh"
 
 step_banner 12 "Public files (robots / security.txt / sitemaps)"
 step_robots_sitemap

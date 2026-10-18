@@ -173,7 +173,7 @@ else
         git clone https://github.com/blechschmidt/massdns.git "$MASSDNS_DIR"
     fi
     make -C "$MASSDNS_DIR"
-    sudo make -C "$MASSDNS_DIR" install
+    sudo make -C "$MASSDNS_DIR" install || echo "[!] massdns: make install failed (sudo?) — continuing"
     if command -v massdns >/dev/null 2>&1; then
         echo "[+] massdns: installed"
     else
@@ -269,15 +269,25 @@ else
             return 0
         fi
 
+        local venv_ok=0
         if [ -f "$target_dir/requirements.txt" ] || [ -f "$target_dir/pyproject.toml" ]; then
             uv venv "$target_dir/venv" &>/dev/null || true
             uv pip install --python "$target_dir/venv/bin/python" \
                 -r "${target_dir}/requirements.txt" 2>/dev/null || \
             uv pip install --python "$target_dir/venv/bin/python" \
                 dnspython requests requests-futures 2>/dev/null || true
+            if [ -x "$target_dir/venv/bin/python" ]; then
+                venv_ok=1
+            fi
+        else
+            venv_ok=1   # no dependency manifest → clone-only install is complete
         fi
 
-        echo "[+] ${repo}: installed"
+        if [ "$venv_ok" -eq 1 ]; then
+            echo "[+] ${repo}: installed"
+        else
+            echo "[!] ${repo}: venv setup FAILED"
+        fi
         return 0
     }
 

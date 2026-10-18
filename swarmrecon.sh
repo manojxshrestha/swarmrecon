@@ -40,8 +40,8 @@ while getopts ":d:h" opt; do
 done
 [ -z "$DOMAIN" ] && usage
 
-# DOMAIN is used inside eval() (step 4 binary ladder) and as a path component
-# (recon/<DOMAIN>/) — accept plain hostnames only: no slashes, no shell metas.
+# DOMAIN is used as a path component (recon/<DOMAIN>/) and in theHarvester -d
+# — accept plain hostnames only: no slashes, no shell metas.
 # (plain printf: the log helpers below are not defined yet)
 if ! [[ "$DOMAIN" =~ ^[A-Za-z0-9_]([A-Za-z0-9._-]*[A-Za-z0-9])?$ ]] || [ "${#DOMAIN}" -gt 253 ]; then
     printf '%s[!]%s invalid domain: %s (hostname chars only: A-Z a-z 0-9 . _ -, max 253)\n' \
@@ -290,6 +290,14 @@ step_nmap() {
 #  output → recon/<domain>/06-ctfr/
 # ================================================================
 step_ctfr() {
+    # fresh run: ctfr.py opens its -o file in APPEND mode (no truncate) and the
+    # live probe file is only rewritten when httpx actually runs. Create the dir
+    # and drop both BEFORE the readiness guard so a skipped step can never feed
+    # step 7 stale results.
+    mkdir -p "$OUTDIR/06-ctfr"
+    rm -f "$OUTDIR/06-ctfr/ctfr-subdomains.txt" \
+          "$OUTDIR/06-ctfr/live-ctfr-subdomains.txt"
+
     local ctfr_dir="$HOME/ctfr"
     local ctfr_act; ctfr_act="$(venv_activate "$ctfr_dir")"
     if [ ! -f "$ctfr_dir/ctfr.py" ] || [ -z "$ctfr_act" ]; then
@@ -628,6 +636,11 @@ step_robots_sitemap() {
 #  rmdir'd at the end of the step so an empty dir never lingers)
 # ================================================================
 step_subenum() {
+    # fresh run: drop this target's previous final lists BEFORE the skip-guard —
+    # steps 13/14 consume these roots unconditionally, so a skipped rerun must
+    # never leave last run's data behind (staging files keep their rm below)
+    rm -f "$OUTDIR/https-subs.txt" "$OUTDIR/alive-domains.txt"
+
     local subenum_dir="$HOME/subenum"
     if [ ! -f "$subenum_dir/subenum.sh" ]; then
         warn "Step 7 SKIPPED: subenum not found at ${subenum_dir} (run ./install.sh)"
@@ -642,10 +655,9 @@ step_subenum() {
     local domain="$DOMAIN"
     local t0; t0=$(now_s)
 
-    # fresh run: drop this target's previous final + staging lists so a rerun
-    # never merges with or reports stale data (recon.log is truncated each run)
-    rm -f "$OUTDIR/https-subs.txt" "$OUTDIR/alive-domains.txt" \
-          "$sdir/https-subs.txt" "$sdir/alive-domains.txt" "$sdir/temp"
+    # fresh run: drop this target's staging lists so a rerun never merges with
+    # stale data (root finals were already dropped above the skip-guard)
+    rm -f "$sdir/https-subs.txt" "$sdir/alive-domains.txt" "$sdir/temp"
 
     info "subenum.sh -d ${domain} -hp (cwd: ${subenum_dir})"
     # run in ITS dir (OUTPUT_DIR is CWD-relative: outputs/<domain>/...)
@@ -806,6 +818,7 @@ step_crawl() {
                 ok "gau → gauurls.txt (${ng:-0} URLs)"; ran=$((ran + 1))
             else
                 err "gau FAILED (exit=$?) — see ${LOG}"
+                rm -f "$OUTDIR/gauurls.txt"   # never merge a partial crawl
             fi
         else
             warn "anew not found — gau output written directly"
@@ -813,6 +826,7 @@ step_crawl() {
                 ran=$((ran + 1))
             else
                 err "gau FAILED (exit=$?) — see ${LOG}"
+                rm -f "$OUTDIR/gauurls.txt"   # never merge a partial crawl
             fi
         fi
     else
@@ -856,6 +870,7 @@ step_crawl() {
             ok "hakrawler → hakcrawlurls.txt (${nh:-0} URLs)"; ran=$((ran + 1))
         else
             err "hakrawler FAILED (exit=$?) — see ${LOG}"
+            rm -f "$OUTDIR/hakcrawlurls.txt"   # never merge a partial crawl
         fi
     else
         warn "hakrawler not found — skipped"; skipped=$((skipped + 1))
@@ -872,6 +887,7 @@ step_crawl() {
                 ok "katana → cleansubskatanaurls.txt (${nk:-0} URLs)"; ran=$((ran + 1))
             else
                 err "katana FAILED (exit=$?) — see ${LOG}"
+                rm -f "$kt_out"   # never merge a partial crawl
             fi
         else
             warn "anew not found — katana output written directly"
@@ -879,6 +895,7 @@ step_crawl() {
                 ran=$((ran + 1))
             else
                 err "katana FAILED (exit=$?) — see ${LOG}"
+                rm -f "$kt_out"   # never merge a partial crawl
             fi
         fi
     else
@@ -1107,7 +1124,8 @@ step_highvalue() {
 
     # merge per-host results into the contract pair (results.json/.txt)
     if [ ${#t_files[@]} -eq 1 ]; then
-        cp "${t_files[0]}" "$sdir/high-value-results.json"
+        cp "${t_files[0]}" "$sdir/high-value-results.json" \
+            || warn "cp failed — high-value-results.json missing"
     elif [ ${#t_files[@]} -gt 1 ] && command -v jq >/dev/null 2>&1; then
         jq -s 'add' "${t_files[@]}" > "$sdir/high-value-results.json" \
             || warn "jq merge failed — high-value-results.json may be partial"
@@ -1328,18 +1346,15 @@ step_intel() {
 #  output → recon/<domain>/04-osint/
 # ================================================================
 
-# theHarvester runner — $1=sdir $2=basename $3=sources $4=label $5=harv_bin
+# theHarvester runner — $1=sdir $2=basename $3=sources $4=label $5...=command argv
 # (binary ladder resolved by step_osint; uv sync may not create an entry point)
 _run_harvester() {
-    local osint_dir="$1" base="$2" sources="$3" label="$4" harv_bin="$5"
+    local osint_dir="$1" base="$2" sources="$3" label="$4"
+    shift 4
     info "theHarvester (${label}) — sources: ${sources}"
     (
         cd "$osint_dir" || exit 1
-        if printf '%s' "$harv_bin" | grep -q " "; then
-            eval "$harv_bin" -d "$DOMAIN" -b "$sources" -n -r -f "$base"
-        else
-            "$harv_bin" -d "$DOMAIN" -b "$sources" -n -r -f "$base"
-        fi
+        "$@" -d "$DOMAIN" -b "$sources" -n -r -f "$base"
     ) 2>&1 | tee -a "$osint_dir/theharvester.log"
     return "${PIPESTATUS[0]}"
 }
@@ -1380,19 +1395,19 @@ step_osint() {
     fi
 
     # binary ladder (uv sync doesn't always create an entry point)
-    local harv_bin=""
+    local harv_args=()
     if [ -f "$harvester_dir/.venv/bin/theHarvester" ]; then
-        harv_bin="$harvester_dir/.venv/bin/theHarvester"
+        harv_args=("$harvester_dir/.venv/bin/theHarvester")
     elif command -v theHarvester >/dev/null 2>&1; then
-        harv_bin="theHarvester"
+        harv_args=(theHarvester)
     elif [ -f "$harvester_dir/.venv/bin/python3" ]; then
         if command -v uv >/dev/null 2>&1; then
-            harv_bin="uv run --directory \"$harvester_dir\" theHarvester"
+            harv_args=(uv run --directory "$harvester_dir" theHarvester)
         else
-            harv_bin="\"$harvester_dir/.venv/bin/python3\" -m theHarvester"
+            harv_args=("$harvester_dir/.venv/bin/python3" -m theHarvester)
         fi
     fi
-    if [ -z "$harv_bin" ]; then
+    if [ ${#harv_args[@]} -eq 0 ]; then
         warn "Step 4 SKIPPED: theHarvester binary not found (run ./install.sh)"
         note_result "skip" "4 · OSINT" "theHarvester binary missing — run ./install.sh"
         return 0
@@ -1412,8 +1427,8 @@ step_osint() {
     local SUB_SOURCES="crtsh,rapiddns,subdomaincenter,hackertarget,otx,urlscan,dnsdumpster,bevigil,certspotter,bufferoverun,virustotal,waybackarchive,commoncrawl,securityTrails,fullhunt,projectdiscovery,robtex"
     local EMAIL_SOURCES="yahoo,duckduckgo,hunter,intelx,haveibeenpwned,hudsonrock,leakix,leaklookup,mojeek,tomba"
 
-    _run_harvester "$sdir" "theharvester_subdomains" "$SUB_SOURCES" "subdomains" "$harv_bin" || true
-    _run_harvester "$sdir" "theharvester_emails" "$EMAIL_SOURCES" "emails" "$harv_bin" || true
+    _run_harvester "$sdir" "theharvester_subdomains" "$SUB_SOURCES" "subdomains" "${harv_args[@]}" || true
+    _run_harvester "$sdir" "theharvester_emails" "$EMAIL_SOURCES" "emails" "${harv_args[@]}" || true
 
     _extract_json_field "$sdir/theharvester_subdomains.json" "$sdir/subdomains.txt" "hosts" || true
     _extract_json_field "$sdir/theharvester_emails.json" "$sdir/emails.txt" "emails" || true

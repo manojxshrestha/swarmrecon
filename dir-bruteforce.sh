@@ -211,10 +211,10 @@ check_waf() {
 fingerprint_entry() {
   local json="$1"
   # Use (status, words, lines, length) as composite fingerprint
-  python3 -c "
+  python3 - "$json" <<'PY'
 import json, sys
 try:
-    with open('$json') as f:
+    with open(sys.argv[1]) as f:
         data = json.load(f)
     results = data.get('results', [])
     for r in results:
@@ -229,7 +229,7 @@ try:
         print(json.dumps(fp))
 except Exception as e:
     print(json.dumps({'error': str(e)}), file=sys.stderr)
-"
+PY
 }
 
 # ── Check if path matches critical or interesting patterns ────────────
@@ -380,7 +380,7 @@ scan_host() {
 
     # Clean wordlist — strip comments/blanks/leading slashes (avoid //FUZZ), truncate to budget
     local clean_wl
-    clean_wl=$(mktemp "/tmp/dirbust_${wl_name%.txt}_XXXXXX.txt")
+    clean_wl=$(mktemp "${TMPDIR:-/tmp}/dirbust_${wl_name%.txt}_XXXXXX.txt")
     grep -vE '^\s*(#|$)' "$wl_file" | sed 's|^/||' | head -"$use_count" > "$clean_wl"
 
     local rps_est=${req_per_sec:-0}
@@ -470,7 +470,7 @@ PY
           local ext_out="$evi_dir/ffuf-extensions.json"
           log_info "  Extension scan: $ext_profile ($exts)..."
           local clean_ext ext_use
-          clean_ext=$(mktemp "/tmp/dirbust_ext_${ext_profile}_XXXXXX.txt")
+          clean_ext=$(mktemp "${TMPDIR:-/tmp}/dirbust_ext_${ext_profile}_XXXXXX.txt")
           ext_use=$(grep -vE '^\s*(#|$)' "$ext_wl" | wc -l)
           ext_use=$((ext_use + 0))
           [ "$ext_use" -gt "$ext_remaining" ] && ext_use=$ext_remaining
@@ -786,7 +786,7 @@ aggregate_to_target() {
       nlines=$(grep -cve '^\s*\(#\|$\)' "$src" 2>/dev/null || true)
       [ -z "$nlines" ] && nlines=0
       if [ ! -f "$dst" ]; then
-        cp "$src" "$dst"
+        cp "$src" "$dst" || { log_warn "cp failed — $f not aggregated"; continue; }
       elif [ "$nlines" -gt 0 ]; then
         { echo "# source: ${host_domain}"
           grep -vE '^\s*#' "$src" | sed '/^[[:space:]]*$/d'

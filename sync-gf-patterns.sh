@@ -93,7 +93,7 @@ for f in "$SRC"/*.json; do
 done > "$MANIFEST.tmp"
 mv -f "$MANIFEST.tmp" "$MANIFEST"
 
-TOTAL=$(ls "$GF_DIR"/*.json 2>/dev/null | wc -l | tr -d ' ')
+TOTAL=$(find "$GF_DIR" -maxdepth 1 -name '*.json' | wc -l | tr -d ' ')
 if [ "$INSTALLED" -eq 0 ] && [ "$PRUNED" -eq 0 ]; then
   log "GF patterns already up-to-date → $GF_DIR/ ($UPTODATE unchanged, $TOTAL total)"
 else

@@ -37,6 +37,7 @@ out_abs="$(cd "$out_dir" && pwd -P)"
 emptydir=$(mktemp -d)
 trap 'rm -rf "$emptydir"' EXIT
 shopt -s nullglob
+declare -A _seen_safe=()
 
 total=0
 classes=0
@@ -54,6 +55,12 @@ for pattern in "$HOME"/.gf/*.json; do
         continue
     fi
     if [ "$n" -gt 0 ]; then
+        if [ -n "${_seen_safe[$safe]:-}" ]; then
+            echo "[!] gf-$safe: another pattern maps to this filename (_ vs -) — skipped"
+            rm -f "$tmp"
+            continue
+        fi
+        _seen_safe[$safe]=1
         mv "$tmp" "$out_abs/gf-$safe.txt"
         echo "[+] gf-$safe.txt: $n"
         total=$((total + n))

@@ -49,6 +49,7 @@ echo "  idor-param-candidates.txt = IDOR candidates with query parameters"
 echo "===================================="
 }
 
+domain=""
 read -r -p "Enter domain to filter (e.g., example.com): " domain
 
 # Normalize + validate bare hostname only

@@ -58,7 +58,8 @@ structure. `swarmrecon.sh` encodes that whole playbook:
 # 1. Clone & enter
 git clone https://github.com/manojxshrestha/swarmrecon.git && cd swarmrecon
 
-# 2. Install deps (wappalyzer + chromium, ctfr, puredns + massdns, subenum, GF patterns)
+# 2. Install deps (wappalyzer + chromium, ctfr, puredns + massdns, subenum, GF patterns;
+#    plus intel/OSINT tools via uv — msftrecon · Scopify · Spoofy · cloud_enum · theHarvester)
 ./install.sh
 ```
 
@@ -69,6 +70,9 @@ git clone https://github.com/manojxshrestha/swarmrecon.git && cd swarmrecon
 > `puredns` + `massdns` (→ Go bin + `/usr/local/bin`), `subenum` (→ `~/subenum`,
 > runs its own `install.sh`), and **GF patterns** (`./sync-gf-patterns.sh` copies
 > `gf-patterns/*.json` → `~/.gf`, skips the manifest, prunes stale files).
+> With `uv` present it also sets up the step-3/4 intel tools — `msftrecon`,
+> `Scopify`, `Spoofy`, `cloud_enum` (→ `~/.local/bin/<repo>`, own venv) and
+> `theHarvester` (→ `~/theHarvester`); without `uv` they're skipped with a hint.
 > Everything else must already be on your `PATH`
 > (see [Prerequisites](#prerequisites)). Wordlists are bundled in `wordlists/`.
 
@@ -87,8 +91,9 @@ the run continues):
 | Scanning / fuzzing | `nmap`, `ffuf` |
 | ProjectDiscovery | `httpx`, `dnsx` |
 | URL discovery | `gau`, `anew`, `uro`, `hakrawler`, `katana`, `gospider` |
-| Classification | `gf` — patterns **bundled** in `gf-patterns/` (126 patterns, synced to `~/.gf` by `./install.sh`) |
+| Classification | `gf` — patterns **bundled** in `gf-patterns/` (125 patterns, synced to `~/.gf` by `./install.sh`) |
 | Crawling | `waymore` (venv at `~/waymore/venv`) |
+| Intel / OSINT (steps 3-4) | `theHarvester`, `msftrecon`, `Scopify`, `Spoofy`, `cloud_enum` — set up by `./install.sh` via `uv` |
 
 ---
 
@@ -165,10 +170,34 @@ fast port discovery to service-aware credential guessing using
 
 ```mermaid
 flowchart LR
-    A["raw IPs<br/>($ipFile)"] -->|"masscan"| O["grepable port results<br/>(masscan.log)"]
-    B["alive-domains.txt<br/>(step 7)"] -->|"dnmasscan"| O
-    O -->|"nmap -sV"| G["nmap-scan.gnmap"]
-    G -->|"brutespray"| S["default-credential<br/>checks"]
+    classDef src fill:#0f172a,stroke:#38bdf8,stroke-width:1.5px,color:#e2e8f0
+    classDef tool fill:#1e1b4b,stroke:#818cf8,stroke-width:1.5px,color:#e0e7ff
+    classDef artifact fill:#052e16,stroke:#4ade80,stroke-width:1.5px,color:#dcfce7
+    classDef decision fill:#451a03,stroke:#f59e0b,stroke-width:2px,color:#fde68a
+    classDef halt fill:#450a0a,stroke:#f87171,stroke-width:1.5px,color:#fecaca
+
+    IP["raw IP list<br/>$ipFile"]:::src
+    DOM["alive-domains.txt<br/>step 7 final"]:::src
+
+    IP -->|"masscan<br/>-p1-65535 · --max-rate · -oG"| MS["masscan.log<br/>grepable IP:port/open"]:::artifact
+    DOM -->|"dnmasscan<br/>resolve, then --top-ports -oG"| DN["dns.log + masscan.log<br/>domains → IPs → ports"]:::artifact
+
+    MS --> XIP["unique IPs —<br/>Host: lines, deduped"]:::tool
+    DN --> XIP
+    MS --> XPT["unique open ports —<br/>/open matches, deduped"]:::tool
+    DN --> XPT
+
+    XIP --> NM["nmap -sV<br/>-iL ips -p ports -oG"]:::tool
+    XPT --> NM
+    NM --> GN["nmap-scan.gnmap<br/>22/open/tcp//ssh/OpenSSH 8.2p1/<br/>service names resolved"]:::artifact
+
+    GN --> AUTH{"credential testing<br/>authorized?"}:::decision
+    AUTH -->|"yes — deliberate decision"| BS["brutespray -f (medusa)<br/>SSH · FTP · MySQL · RDP ..."]:::tool
+    AUTH -->|"no"| HOLD["stop at inventory —<br/>ports + services only"]:::halt
+    BS --> RES["scan-results/<br/>SecLists default-credentials<br/>+ custom wordlists"]:::artifact
+
+    NOTE["not automated in swarmrecon.sh —<br/>sudo + explicit authorization"]:::halt
+    GN -.-> NOTE
 ```
 
 > **Not automated in `swarmrecon.sh`** — launching credential guessing must
@@ -287,25 +316,49 @@ budgeted ffuf loop → false-positive kill layer → classified reports, all und
 
 ```mermaid
 flowchart TD
-    classDef phase fill:#cce5ff,stroke:#333,stroke-width:2px,color:#000
-    classDef decision fill:#ffe5cc,stroke:#333,stroke-width:2px,color:#000
-    classDef terminal fill:#e6ccff,stroke:#333,stroke-width:2px,color:#000
-    classDef manual fill:#e0f2f1,stroke:#333,stroke-width:2px,color:#000
+    classDef entry fill:#1e1b4b,stroke:#818cf8,stroke-width:2px,color:#e0e7ff
+    classDef phase fill:#0f172a,stroke:#38bdf8,stroke-width:1.5px,color:#e2e8f0
+    classDef decision fill:#451a03,stroke:#f59e0b,stroke-width:2px,color:#fde68a
+    classDef manual fill:#042f2e,stroke:#2dd4bf,stroke-width:1.5px,color:#ccfbf1
+    classDef artifact fill:#052e16,stroke:#4ade80,stroke-width:1.5px,color:#dcfce7
+    classDef halt fill:#450a0a,stroke:#f87171,stroke-width:1.5px,color:#fecaca
 
-    Start(["./dir-bruteforce.sh<br/>interactive · --url · --plan"]):::terminal --> Pre
-    Pre{"preflight<br/>DNS + HTTP probe"}:::decision
-    Pre -->|"dead host"| Skip["skip —<br/>no budget spent"]:::manual
-    Pre -->|"ok"| WAF["WAF fingerprint<br/>DataDome · Cloudflare · Akamai · AWS"]:::phase
-    WAF --> Robots["robots.txt / sitemap<br/>harvest"]:::phase
-    Robots --> Loop["ffuf per wordlist<br/>-ac · clean temp wl · rate · threads"]:::phase
-    Loop --> Stop{"stop condition"}:::decision
-    Stop -->|"more wordlists"| Loop
-    Loop -->|"wordlists done"| Ext["extension scan<br/>deep + --ext-profile"]:::phase
-    Stop -->|"budget · 429>30% · WAF wall"| Ev
-    Ext --> Ev["evidence/<br/>scan-meta · results · per-status"]:::phase
-    Ev --> FP["false-positive kill layer<br/>control probe · signature clusters · 429 split"]:::phase
-    FP --> Rep["critical-exposure.txt<br/>interesting-surface.txt<br/>results-summary.md"]:::phase
-    Rep --> Out(["directories/&lt;host&gt;/"]):::terminal
+    Start(["./dir-bruteforce.sh"]):::entry --> Mode{"how is it invoked?"}:::decision
+
+    Mode -->|"interactive"| INT["prompts: target URL + wordlist<br/>bare names resolve under wordlists/<br/>whole list — no budget cap"]:::phase
+    Mode -->|"--url + --wordlist"| CLI["scripted flags<br/>--profile light / standard / deep<br/>--threads 500 · --rate 2 ms"]:::phase
+    Mode -->|"--plan scan.json"| PLAN["walk plans[]: host · intent · profile<br/>skip entries with confidence under 0.5"]:::phase
+    Mode -->|"--dry-run"| DRY["print host · budget · wordlist sizes<br/>scan nothing"]:::manual
+    Mode -->|"--report-only"| RO["re-run classifier on existing<br/>evidence/ — no ffuf, no wordlist"]:::manual
+
+    INT --> PRE
+    CLI --> PRE
+    PLAN --> PRE
+    PRE{"preflight<br/>getent DNS + HTTP probe"}:::decision
+    PRE -->|"dead host"| SKIPH["skip host —<br/>no budget spent"]:::halt
+    PRE -->|"alive"| WAF["WAF fingerprint — root-page probe<br/>DataDome · Cloudflare · Akamai · AWS<br/>403/503 fallback arms the wall check"]:::phase
+    WAF --> RB["robots.txt / sitemap harvest<br/>5 doc paths → evidence/robots.txt"]:::phase
+    RB --> LOOP
+
+    LOOP["ffuf pass per wordlist<br/>clean temp copy: comments/blanks stripped,<br/>leading slash removed, truncated to budget<br/>-ac · -mc 200-299,301,302,401,403,405,429,500,502,503<br/>-of json · timeout --foreground"]:::phase
+    LOOP --> STOP{"stop condition"}:::decision
+    STOP -->|"budget left, more wordlists"| LOOP
+    STOP -->|"budget_exhausted —<br/>5 000 / 50 000 / 150 000"| EV
+    STOP -->|"rate_limited —<br/>429 share over 30%"| EV
+    STOP -->|"waf_blocked — WAF suspected +<br/>2 consecutive zero-hit lists"| EV
+    STOP -->|"lists done — deep profile<br/>with --ext-profile set"| EXT["extension scan — -e .php,.bak,...<br/>on raft-medium-files<br/>shares the same budget"]:::phase
+    EXT --> EV
+
+    EV["evidence/<br/>scan-meta.json · results.json<br/>ffuf-&lt;wordlist&gt;.json<br/>&lt;status&gt;/entries.json — JSONL, 429 never stored"]:::artifact
+    EV --> FP["false-positive kill layer<br/>random control probe: ±64 B, or max(256 B, 2%)<br/>signature clusters ≥5x → shell-signature or waf-block-page<br/>429 separation · exact-URL dedup"]:::phase
+    FP --> CLS["regex classification<br/>critical: .git/ .env heapdump id_rsa ...<br/>interesting: /admin /graphql /swagger ..."]:::phase
+    CLS --> REP["critical-exposure.txt<br/>interesting-surface.txt<br/>results-summary.md — with FP-drop counts"]:::artifact
+    RO --> CLS
+
+    REP --> AGG{"--target set?"}:::decision
+    AGG -->|"yes"| MERGE["merge every host's three reports<br/>into directories/&lt;domain&gt;/<br/>source: &lt;host&gt; separators<br/>--fresh-aggregate truncates once"]:::manual
+    AGG -->|"no"| HOST(["directories/&lt;host&gt;/"]):::artifact
+    MERGE --> DOMD(["directories/&lt;domain&gt;/"]):::artifact
 ```
 
 > **Not automated in `swarmrecon.sh`** — step 11 always records a *skip* row.
@@ -445,40 +498,36 @@ and hands off to `./dir-bruteforce.sh`
 
 ```mermaid
 flowchart TD
-    classDef phase fill:#cce5ff,stroke:#333,stroke-width:2px,color:#000
-    classDef gate fill:#ffcccc,stroke:#333,stroke-width:2px,color:#000
-    classDef decision fill:#ffe5cc,stroke:#333,stroke-width:2px,color:#000
-    classDef terminal fill:#e6ccff,stroke:#333,stroke-width:2px,color:#000
-    classDef manual fill:#e0f2f1,stroke:#333,stroke-width:2px,color:#000
+    classDef entry fill:#1e1b4b,stroke:#818cf8,stroke-width:2px,color:#e0e7ff
+    classDef phase fill:#0f172a,stroke:#38bdf8,stroke-width:1.5px,color:#e2e8f0
+    classDef decision fill:#451a03,stroke:#f59e0b,stroke-width:2px,color:#fde68a
+    classDef manual fill:#042f2e,stroke:#2dd4bf,stroke-width:1.5px,color:#ccfbf1
 
-    Start(["./swarmrecon.sh -d example.com"]):::terminal --> S1
+    SETUP(["one-time setup — idempotent<br/>./install.sh · ./sync-gf-patterns.sh<br/>tools + 125 patterns into ~/.gf"]):::manual --> Start
+    Start(["./swarmrecon.sh -d example.com"]):::entry --> S1
 
-    S1["1. WAPPALYZER<br/>tech fingerprint<br/>→ 01-wappalyzer/"]:::phase --> S2
-    S2["2. DNS + WHOIS<br/>dig · whois · nslookup<br/>→ 02-dns-whois/"]:::phase --> S3
+    S1["1 · WAPPALYZER — tech fingerprint<br/>→ 01-wappalyzer/"]:::phase --> S2
+    S2["2 · DNS + WHOIS — dig · whois · nslookup<br/>→ 02-dns-whois/"]:::phase --> S3
+    S3["3 · PASSIVE INTEL — whois · msftrecon · Scopify<br/>Spoofy · cloud_enum → 03-intel/"]:::phase --> S4
+    S4["4 · OSINT — theHarvester: subdomains + emails<br/>→ 04-osint/"]:::phase --> S5
+    S5["5 · NMAP — single-pass port scan<br/>→ 05-nmap/"]:::phase --> PortDec
 
-    S3["3. PASSIVE INTEL<br/>whois · msftrecon · Scopify · Spoofy · cloud_enum<br/>→ 03-intel/"]:::phase --> S4
-    S4["4. OSINT (theHarvester)<br/>subdomains + emails<br/>→ 04-osint/"]:::phase --> S5
-
-    S5["5. NMAP<br/>port scan · open services<br/>→ 05-nmap/"]:::phase --> PortDec
-
-    PortDec{"Port discovery<br/>needed?"}:::decision
-    PortDec -->|"yes (manual)"| Manual["masscan / dnmasscan<br/>→ nmap -sV → brutespray<br/>run by hand — guide below"]:::manual
+    PortDec{"deeper port work<br/>wanted?"}:::decision
+    PortDec -->|"yes — optional, manual"| Manual["masscan / dnmasscan → nmap -sV → brutespray<br/>deliberate authorization required — guide above"]:::manual
     Manual --> S6
     PortDec -->|"no"| S6
 
-    S6["6. CT LOGS (ctfr)<br/>crt.sh subs + liveness<br/>→ 06-ctfr/"]:::phase --> S7
-    S7["7. SUBENUM<br/>multi-source gather + resolve<br/>final: https-subs.txt<br/>final: alive-domains.txt<br/>staging subdomains/ — auto-removed"]:::phase --> S8
-    S8["8. DNS BRUTEFORCE<br/>puredns + massdns<br/>→ 08-puredns/"]:::phase --> S9
-    S9["9. VHOST FUZZING<br/>Host-header discovery<br/>→ 09-vhost/"]:::phase --> S10
-    S10["10. ZONE TRANSFER<br/>axfr against NS list<br/>→ 10-zone-transfer/"]:::phase --> S11
-    S11["11. DIRECTORY BRUTEFORCE<br/>manual — not run by pipeline<br/>./dir-bruteforce.sh → directories/"]:::manual --> S12
-    S12["12. ROBOTS / SITEMAP<br/>waymore · curl<br/>→ 12-robots-sitemap/"]:::phase --> S13
+    S6["6 · CT LOGS — ctfr: crt.sh + liveness probe<br/>→ 06-ctfr/ · live list feeds step 7"]:::phase --> S7
+    S7["7 · SUBENUM — multi-source gather + resolve<br/>merges the live CT output<br/>final at recon root: https-subs.txt + alive-domains.txt<br/>staging subdomains/ — removed at step end"]:::phase --> S8
+    S8["8 · DNS BRUTEFORCE — puredns + massdns<br/>→ 08-puredns/"]:::phase --> S9
+    S9["9 · VHOST FUZZ — Host-header discovery<br/>→ 09-vhost/"]:::phase --> S10
+    S10["10 · ZONE TRANSFER — AXFR per NS<br/>→ 10-zone-transfer/"]:::phase --> S11
+    S11["11 · DIRECTORY BRUTEFORCE — manual<br/>pipeline records a skip — ./dir-bruteforce.sh<br/>→ directories/&lt;host&gt;/"]:::manual --> S12
+    S12["12 · ROBOTS / SITEMAP — waymore · curl<br/>→ 12-robots-sitemap/"]:::phase --> S13
+    S13["13 · WEB CRAWL — waymore · gau · hakrawler<br/>katana · gospider · finals: 7 crawl files<br/>check/ — filter.sh + gf-extract.sh · gooutput/"]:::phase --> S14
+    S14["14 · HIGH-VALUE — ffuf secrets · admin · backups<br/>root files + alive-domains.txt<br/>→ 14-high-value/"]:::phase --> Sum
 
-    S13["13. WEB CRAWL<br/>waymore · gau · hakrawler · katana<br/>final: wayurls.txt · gauurls.txt · waygauurls.txt<br/>final: hakcrawlurls.txt · cleansubskatanaurls.txt<br/>final: alivesubsurls.txt · merged-crawl.txt<br/>→ check/ (filter + gf) · gooutput/"]:::phase --> S14
-
-    S14["14. HIGH-VALUE<br/>secrets · admin · backups<br/>root + alive-domains.txt<br/>→ 14-high-value/"]:::phase --> Summary
-
-    Summary(["Summary table<br/>recon.log · exit 0"]):::terminal
+    Sum(["summary table — ok / skip / fail per step<br/>failed steps point at recon.log · exit 0"]):::entry
 ```
 
 **Key properties of this flow:**
@@ -501,10 +550,10 @@ when you invoke it (step 11 is manual):
 | Script | Usage | Notes |
 |--------|-------|-------|
 | `extracturls.sh` | `./extracturls.sh -f <gospider_folder> -d <domain>` | Extracts + liveness-probes subdomains from crawler output. Requires `dnsx` + `httpx`. |
-| `filter.sh` | `echo <domain> \| ./filter.sh [input]` | Interactive domain prompt (fed via stdin). Defaults to `merged-crawl.txt` in CWD; writes 6 category files to `check/`. Keeps WAF/403/401 alive, drops 404s/errors; strips fragments + tracking params; classifies API/IDOR candidates. |
-| `gf-extract.sh` | `./gf-extract.sh [input_file] [out_dir]` | Defaults: `check/param-urls.txt` → `check/gf/`. `$1` must be a **file** (not a directory). Only patterns with hits produce files. |
+| `filter.sh` | `echo <domain> \| ./filter.sh [input]` | Interactive domain prompt (fed via stdin). Defaults to `merged-crawl.txt` in CWD; writes 7 files to `check/` (6 classification + `httpx-raw`). Keeps WAF/403/401 alive, drops 404s/errors; strips fragments + tracking params; classifies API/IDOR candidates. |
+| `gf-extract.sh` | `./gf-extract.sh [input_file] [out_dir]` | Defaults: `check/param-urls.txt` → `check/gf/`. `$1` must be a **file** (not a directory). Only patterns with hits produce files; patterns whose `_` → `-` sanitized names collide are skipped with a warning. |
 | `sync-gf-patterns.sh` | `./sync-gf-patterns.sh` | Copies `gf-patterns/*.json` → `~/.gf` (skips identical, index excluded, prunes **only this repo's** previously-synced files — ownership-aware for shared `~/.gf`). Called by `install.sh`; run standalone after editing patterns. |
-| `dir-bruteforce.sh` | `./dir-bruteforce.sh` (interactive) · `./dir-bruteforce.sh --url <url> --wordlist <path>` | ffuf path discovery — **never auto-run** by the pipeline (step 11 = *skip*). Profiles `--profile light\|standard\|deep`, plus `--dry-run`, `--force`, `--report-only`, `--target <domain>` → merges hosts under `directories/<domain>/`. Output: `directories/<host>/` (evidence + reports). |
+| `dir-bruteforce.sh` | `./dir-bruteforce.sh` (interactive) · `./dir-bruteforce.sh --url <url> --wordlist <path>` | ffuf path discovery — **never auto-run** by the pipeline (step 11 = *skip*). Profiles `--profile light\|standard\|deep` + `--ext-profile`, plus `--plan <scan.json>`, `--dry-run`, `--force`, `--report-only`, `--target <domain>` (merges hosts under `directories/<domain>/`; `--fresh-aggregate` truncates it first). Output: `directories/<host>/` (evidence + reports). |
 
 ---
 
@@ -515,7 +564,7 @@ when you invoke it (step 11 is manual):
 | `subdomains-top1million-20000.txt` | step 8 — puredns bruteforce |
 | `resolvers.txt` | step 8 — puredns resolvers |
 | `common.txt` | step 9 — vhost fuzzing |
-| any file you choose (e.g. `raft-medium-directories.txt`) | step 11 (manual) — `./dir-bruteforce.sh` takes it at the `Wordlist path:` prompt or via `--wordlist <path>`; no built-in default |
+| `raft-medium-directories.txt` · `raft-medium-files.txt` · `big.txt` … (any file you choose) | step 11 (manual) — `./dir-bruteforce.sh` takes a bare name (resolved under `wordlists/`) at the `Wordlist path:` prompt or via `--wordlist <path>`; no built-in default |
 | `high-value-paths.txt` | step 14 — secrets/disclosure/juicy files (`#`-marked sections), fuzzed against root + `alive-domains.txt` hosts |
 
 ### `gf-patterns/` (127 files)

@@ -1,0 +1,10 @@
+/oauth/authorize
+/oauth/token
+/oauth/login
+/oauth2/authorize
+/oauth2/token
+/oauth/v1/authorize
+/oauth2/v1/authorize
+/oauth/auth
+/authorize
+/login/oauth/authorize

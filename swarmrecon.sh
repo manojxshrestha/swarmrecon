@@ -180,6 +180,10 @@ PY
 #  output → recon/<domain>/02-dns-whois/
 # ================================================================
 step_dns_whois() {
+    # fresh run: drop the previous output dir before the guard — a skipped
+    # step must not leave stale DNS/WHOIS evidence from an earlier run
+    rm -rf "$OUTDIR/02-dns-whois"
+
     local miss=0
     for t in dig whois nslookup; do
         if ! command -v "$t" >/dev/null 2>&1; then
@@ -579,7 +583,7 @@ step_robots_sitemap() {
 
         # 4. Common sitemap paths — status/type/final URL (MEDIUM)
         {
-            paths=(
+            local -a paths=(
                 "sitemap.xml"
                 "sitemap-index.xml"
                 "sitemap_index.xml"
@@ -817,7 +821,7 @@ step_crawl() {
     # --- 2. gau: echo $D | gau --threads 10 --subs | anew gauurls.txt ---
     if command -v gau >/dev/null 2>&1; then
         if command -v anew >/dev/null 2>&1; then
-            if echo "$DOMAIN" | gau --threads 10 --subs | anew "$OUTDIR/gauurls.txt" >>"$LOG" 2>&1; then
+            if echo "$DOMAIN" | gau --threads 10 --subs 2>>"$LOG" | anew "$OUTDIR/gauurls.txt" >>"$LOG" 2>&1; then
                 local ng=0; ng=$(grep -c 'http' "$OUTDIR/gauurls.txt" 2>/dev/null || true)
                 ok "gau → gauurls.txt (${ng:-0} URLs)"; ran=$((ran + 1))
             else
@@ -886,7 +890,7 @@ step_crawl() {
     elif command -v katana >/dev/null 2>&1; then
         local kt_out="$OUTDIR/cleansubskatanaurls.txt"
         if command -v anew >/dev/null 2>&1; then
-            if cat "$subs" | katana -d 3 -jc -timeout 15 -c 20 | anew "$kt_out" >>"$LOG" 2>&1; then
+            if cat "$subs" | katana -d 3 -jc -timeout 15 -c 20 2>>"$LOG" | anew "$kt_out" >>"$LOG" 2>&1; then
                 local nk=0; nk=$(grep -c 'http' "$kt_out" 2>/dev/null || true)
                 ok "katana → cleansubskatanaurls.txt (${nk:-0} URLs)"; ran=$((ran + 1))
             else
@@ -1131,7 +1135,10 @@ step_highvalue() {
         cp "${t_files[0]}" "$sdir/high-value-results.json" \
             || warn "cp failed — high-value-results.json missing"
     elif [ ${#t_files[@]} -gt 1 ] && command -v jq >/dev/null 2>&1; then
-        jq -s 'add' "${t_files[@]}" > "$sdir/high-value-results.json" \
+        # merge ALL hosts' .results — plain `add` is right-biased (every earlier
+        # host was overwritten by the next file); verified 2026-10-19
+        jq -s '{results: [.[] | (.results // []) | .[]]}' "${t_files[@]}" \
+            > "$sdir/high-value-results.json" \
             || warn "jq merge failed — high-value-results.json may be partial"
     elif [ ${#t_files[@]} -gt 1 ]; then
         python3 - "$sdir/high-value-results.json" "${t_files[@]}" <<'PYEOF' \

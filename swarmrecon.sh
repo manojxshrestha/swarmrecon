@@ -1075,7 +1075,7 @@ step_crawl() {
     elif command -v katana >/dev/null 2>&1; then
         local kt_out="$OUTDIR/cleansubskatanaurls.txt"
         if command -v anew >/dev/null 2>&1; then
-            if cat "$subs" | katana -d 3 -jc -timeout 15 -c 20 2>>"$LOG" | anew "$kt_out" >>"$LOG" 2>&1; then
+            if cat "$subs" | katana -d 3 -jc -timeout 15 -c 20 -ct 10m 2>>"$LOG" | anew "$kt_out" >/dev/null 2>>"$LOG"; then
                 local nk=0; nk=$(grep -c 'http' "$kt_out" 2>/dev/null || true)
                 ok "katana → cleansubskatanaurls.txt (${nk:-0} URLs)"; ran=$((ran + 1))
             else

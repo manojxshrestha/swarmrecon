@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # install.sh — swarmrecon dependency setup
-# Usage: ./install.sh
+# Usage: ./install.sh [--gau-config-only]
 # IDEMPOTENT — safe to re-run: every section CHECKS FIRST and skips whatever
 # is already installed; only missing components get installed. Markers:
 #   ~/ctfr/venv/.deps-ok      (ctfr requirements done)
@@ -9,10 +9,72 @@
 # Wordlists ship with the repo; GF patterns are synced into ~/.gf.
 set -euo pipefail
 
+GAU_CONFIG_ONLY=false
+case "${1:-}" in
+    "") ;;
+    --gau-config-only) GAU_CONFIG_ONLY=true ;;
+    *) echo "usage: $0 [--gau-config-only]" >&2; exit 1 ;;
+esac
+if [ "$#" -gt 1 ]; then
+    echo "usage: $0 [--gau-config-only]" >&2
+    exit 1
+fi
+
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 export PATH="$HOME/go/bin:$HOME/.local/bin:$PATH"
 
 echo "[*] swarmrecon — dependency setup"
+
+# ================================================================
+#  gau — Step 13 archive URL provider config
+#  Written early so an interrupted/failed optional install cannot skip it.
+#  Create-only: an existing ~/.gau.toml is never overwritten.
+# ================================================================
+GAU_CONFIG="$HOME/.gau.toml"
+write_gau_config() {
+    if [ -f "$GAU_CONFIG" ]; then
+        echo "[+] gau config: already present — leaving it unchanged (${GAU_CONFIG})"
+        return 0
+    fi
+    if cat > "$GAU_CONFIG" <<'GAU_CONFIG_EOF'
+threads = 20
+verbose = false
+retries = 5
+subdomains = true
+parameters = false
+providers = ["wayback","commoncrawl","otx","urlscan"]
+blacklist = ["ttf","woff","svg","png","jpg","gif","ico","css","pdf","mp4","mp3"]
+json = false
+
+[urlscan]
+  apikey = ""
+
+[filters]
+  from = ""
+  to = ""
+  matchstatuscodes = []
+  matchmimetypes = []
+  filterstatuscodes = []
+  filtermimetypes = ["image/png","image/jpg","image/svg+xml","image/gif"]
+GAU_CONFIG_EOF
+    then
+        echo "[+] gau config: written (${GAU_CONFIG})"
+        return 0
+    fi
+    echo "[!] gau config: could not write ${GAU_CONFIG} — Step 13 gau may use defaults"
+    return 1
+}
+
+if ! write_gau_config; then
+    if $GAU_CONFIG_ONLY; then
+        exit 1
+    fi
+fi
+
+if $GAU_CONFIG_ONLY; then
+    echo "[+] gau config ready."
+    exit 0
+fi
 
 # ---- sudo capability (openswarm pattern) ----
 HAS_PASSWORDLESS_SUDO=false
@@ -315,44 +377,6 @@ else
             echo "[!] theHarvester: clone FAILED — skipped (step 4 will report skip)"
             rm -rf "$HOME/theHarvester" 2>/dev/null || true
         fi
-    fi
-fi
-
-# ================================================================
-#  gau — Step 13 archive URL provider config
-#  Created here rather than edited by hand. Create-only: an existing
-#  ~/.gau.toml is never overwritten (remove it and re-run to regenerate).
-# ================================================================
-GAU_CONFIG="$HOME/.gau.toml"
-echo "[*] gau config → ${GAU_CONFIG}"
-if [ -f "$GAU_CONFIG" ]; then
-    echo "[+] gau config: already present — leaving it unchanged"
-else
-    if cat > "$GAU_CONFIG" <<'GAU_CONFIG_EOF'
-threads = 20
-verbose = false
-retries = 5
-subdomains = true
-parameters = false
-providers = ["wayback","commoncrawl","otx","urlscan"]
-blacklist = ["ttf","woff","svg","png","jpg","gif","ico","css","pdf","mp4","mp3"]
-json = false
-
-[urlscan]
-  apikey = ""
-
-[filters]
-  from = ""
-  to = ""
-  matchstatuscodes = []
-  matchmimetypes = []
-  filterstatuscodes = []
-  filtermimetypes = ["image/png","image/jpg","image/svg+xml","image/gif"]
-GAU_CONFIG_EOF
-    then
-        echo "[+] gau config: written (${GAU_CONFIG})"
-    else
-        echo "[!] gau config: could not write ${GAU_CONFIG} — Step 13 gau may use defaults"
     fi
 fi
 

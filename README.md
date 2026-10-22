@@ -238,10 +238,12 @@ Run it standalone when you want the two lists without starting a crawl:
    `merged-https-subs.txt` to the root lists, then delete the merged files.
 1. `cd ~/waymore && waymore -i <domain> -mode U -oU wayurls.txt` (venv activated, runs inside `~/waymore`, stale `wayurls.txt` removed first) → **moved** to root `wayurls.txt`
 2. `echo <domain> | gau --threads 10 --subs | anew gauurls.txt` (no `anew` → plain `> gauurls.txt`) → root `gauurls.txt`
-   `gau` reads `~/.gau.toml`; `./install.sh` creates it when absent (20 threads,
-   5 retries, wayback/commoncrawl/otx/urlscan). If providers are unreachable or
+   `gau` reads `~/.gau.toml`; `./install.sh` creates it early, before the
+   optional tool installs, when absent (20 threads, 5 retries,
+   wayback/commoncrawl/otx/urlscan). If providers are unreachable or
    rate-limited, `gau` can still exit `0` with 0 URLs — run it with
-   `--verbose` to see per-provider errors.
+   `--verbose` to see per-provider errors. To repair/create only the config
+   without reinstalling anything: `./install.sh --gau-config-only`.
 3. `cat wayurls.txt gauurls.txt | uro | sort -u > waygauurls.txt` (only the inputs that exist; no `uro` → `sort -u` alone) → root `waygauurls.txt`
 4. `cat https-subs.txt | hakrawler -subs -u -d 3 > hakcrawlurls.txt` → root `hakcrawlurls.txt`
 5. `cat https-subs.txt | katana -d 3 -jc -timeout 15 -c 20 | anew cleansubskatanaurls.txt` (no `anew` → plain `> cleansubskatanaurls.txt`) → root `cleansubskatanaurls.txt`

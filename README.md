@@ -30,7 +30,7 @@
 
 ---
 
-**Quick links:** [What is this?](#what-is-this) · [Quick Install](#quick-install) · [Usage](#usage) · [Manual](#manual) · [Manual: after Step 5](#port-discovery--service-brute-forcing-manual) · [Manual: Step 11](#directory-bruteforce-manual) · [Pipeline](#pipeline-14-steps) · [Source merge](#source-merge) · [Engagement Flow](#engagement-flow) · [Wordlists & patterns](#wordlists--patterns) · [Design notes](#design-notes)
+**Quick links:** [What is this?](#what-is-this) · [Quick Install](#quick-install) · [Usage](#usage) · [Resume](#resume--restart-from-a-step) · [Manual](#manual) · [Manual: after Step 5](#port-discovery--service-brute-forcing-manual) · [Manual: Step 11](#directory-bruteforce-manual) · [Pipeline](#pipeline-14-steps) · [Source merge](#source-merge) · [Engagement Flow](#engagement-flow) · [Wordlists & patterns](#wordlists--patterns) · [Design notes](#design-notes)
 
 ---
 
@@ -62,6 +62,9 @@ structure. `swarmrecon.sh` encodes that whole playbook:
   feed later stages clear their previous results before use, so a failed rerun
   cannot feed stale data downstream; a skipped step may still leave old raw
   evidence in its own folder.
+- **Resumable** — stopped by Ctrl+C or a closed terminal? `--resume` continues at
+  the first unfinished step instead of redoing Steps 1–12; `--from <n>` restarts
+  at a step you choose. See [Resume](#resume--restart-from-a-step).
 - **Wordlists ship with the repo** — no separate download step.
 
 ---

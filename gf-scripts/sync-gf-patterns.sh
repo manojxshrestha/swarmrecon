@@ -16,14 +16,14 @@
 # repo's manifest claims (or user files) are never touched.
 #
 # Usage:
-#   ./sync-gf-patterns.sh
+#   ./gf-scripts/sync-gf-patterns.sh
 #   gf -list
 # =============================================================================
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-REPO_DIR="$SCRIPT_DIR"
+REPO_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 SRC="$REPO_DIR/gf-patterns"
 GF_DIR="$HOME/.gf"
 TOOL_ID="swarmrecon"

@@ -2,10 +2,12 @@
 # =============================================================================
 #
 # Usage:
-#   dir-bruteforce.sh                                 Interactive: prompts for
+#   ./bruteforce/dir-bruteforce.sh                    Interactive: prompts for
 #                                                     target URL + wordlist path
-#   dir-bruteforce.sh --url <url> --wordlist <f>      Single host scan
-#   dir-bruteforce.sh --plan <file> --wordlist <f>    Execute scan plan (JSON)
+#   ./bruteforce/dir-bruteforce.sh --url <url> --wordlist <f>
+#                                                     Single host scan
+#   ./bruteforce/dir-bruteforce.sh --plan <file> --wordlist <f>
+#                                                     Execute scan plan (JSON)
 #
 # Options (with --url / --plan):
 #   --wordlist <path>     Wordlist file (repeatable, REQUIRED — no built-in lists)
@@ -50,7 +52,7 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 # Previously sourced openswarm scripts/tools/_env.sh (log_*, _scope_guard).
 # All dependencies are now defined here; outputs land in
 # <swarmrecon-root>/directories/<host>/ (no recon/ nesting).
-BASE_DIR="$SCRIPT_DIR"                     # script sits at swarmrecon root
+BASE_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"   # parent of bruteforce/ = swarmrecon root
 WL_DIR="$BASE_DIR/wordlists"               # convenience dir for bare-name picks
 DIRBUST_BASE="${BASE_DIR}/directories"     # swarmrecon root -> directories/<host>/
 

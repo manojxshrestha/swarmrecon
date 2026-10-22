@@ -4,7 +4,7 @@
 # to the openswarm engagement (see prompts/phase3-3b-4-skip-prompt.md).
 #
 # Usage:
-#   ./gf-extract.sh [input_file] [output_dir]
+#   ./gf-scripts/gf-extract.sh [input_file] [output_dir]
 #     input default:  check/param-urls.txt   (pipeline-identical evidence;
 #                     pass check/crawledurls.txt for full path-pattern coverage)
 #     output default: check/gf/              (copy gf-*.txt to engagement params/)
@@ -20,7 +20,7 @@ out_dir="${2:-check/gf}"
 command -v gf >/dev/null 2>&1 || { echo "Error: gf not found in PATH"; exit 1; }
 [ -f "$input_file" ] || { echo "Error: input file '$input_file' not found."; exit 1; }
 [ -d "$HOME/.gf" ] && ls "$HOME/.gf"/*.json >/dev/null 2>&1 || {
-  echo "Error: gf patterns missing at $HOME/.gf — run ./sync-gf-patterns.sh (patterns bundled in gf-patterns/)"
+  echo "Error: gf patterns missing at $HOME/.gf — run ./gf-scripts/sync-gf-patterns.sh (patterns bundled in gf-patterns/)"
   exit 1
 }
 

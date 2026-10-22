@@ -172,6 +172,64 @@ repair_venv_python() {  # $1 = activate path
     return 0
 }
 
+# ---------- source merge (Steps 4/8/9/12 → Steps 13/14) ----------
+# The numbered step dirs hold candidates that the crawler and the high-value
+# hunt never consumed. merge_forward builds the two compatibility lists in
+# recon/<domain>/merge/, appends them to the root lists with dedupe, and then
+# removes the temporary merged files (the user's append-and-delete flow).
+# Calling it twice is safe: the candidates are regenerated from the numbered
+# dirs each time, and sort -u keeps the append idempotent.
+_append_unique() {  # $1=source file  $2=destination file
+    local src="$1" dst="$2" tmp
+    [ -e "$src" ] || return 0
+    if [ ! -s "$src" ]; then
+        rm -f "$src"
+        return 0
+    fi
+    tmp="${dst}.merge.$$"
+    if ! touch "$dst" 2>/dev/null; then
+        warn "cannot create ${dst} — merge append skipped"
+        rm -f "$src"
+        return 0
+    fi
+    if cat "$dst" "$src" 2>/dev/null \
+        | sed -e 's/\r$//' \
+              -e '/^[[:space:]]*$/d' \
+              -e 's|^\(https\?://[^/]\+\)/$|\1|' \
+        | sort -u > "$tmp" \
+        && mv -f "$tmp" "$dst"; then
+        rm -f "$src"
+        return 0
+    fi
+    rm -f "$tmp"
+    warn "could not append $(basename "$src") to $(basename "$dst")"
+    return 0
+}
+
+merge_forward() {
+    local merger="$SWARM_DIR/merge/merge-sources.sh"
+    local mdir="$OUTDIR/merge"
+    local nh=0 nu=0
+
+    if [ ! -f "$merger" ]; then
+        warn "merge/merge-sources.sh missing — Step 4/8/9/12 candidates not forwarded"
+        return 0
+    fi
+    if ! bash "$merger" -d "$DOMAIN" -o "$OUTDIR" >>"$LOG" 2>&1; then
+        warn "source merge failed — see ${LOG}"
+        return 0
+    fi
+
+    _append_unique "$mdir/merged-alive-domains.txt" "$OUTDIR/alive-domains.txt"
+    _append_unique "$mdir/merged-https-subs.txt"    "$OUTDIR/https-subs.txt"
+    rmdir "$mdir" 2>/dev/null || true
+
+    nh=$(grep -c '.' "$OUTDIR/alive-domains.txt" 2>/dev/null || true)
+    nu=$(grep -c 'http' "$OUTDIR/https-subs.txt" 2>/dev/null || true)
+    info "merged Steps 4/8/9/12 → alive-domains.txt (${nh:-0} hosts) + https-subs.txt (${nu:-0} seeds)"
+    return 0
+}
+
 # ================================================================
 #  Step 1 — Technology discovery (Wappalyzer)
 #  output → recon/<domain>/01-wappalyzer/
@@ -834,7 +892,7 @@ step_subenum() {
 #                 | uro > merged-crawl.txt
 #    filter.sh (domain via stdin) -> check/ ; downstream uses only
 #    check/param-urls.txt
-#    gf-extract.sh check/param-urls.txt -> check/gf/gf-*.txt (pattern classes)
+#    gf-scripts/gf-extract.sh check/param-urls.txt -> check/gf/gf-*.txt (pattern classes)
 #  All crawl artifacts live directly in recon/<domain>/ (same convention
 #  as https-subs.txt / alive-domains.txt).
 # ================================================================
@@ -847,6 +905,10 @@ step_crawl() {
           "$OUTDIR/hakcrawlurls.txt" "$OUTDIR/cleansubskatanaurls.txt" \
           "$OUTDIR/alivesubsurls.txt" "$OUTDIR/merged-crawl.txt"
     rm -rf "$OUTDIR/gooutput" "$OUTDIR/check"
+
+    # Forward the orphaned Step 4/8/9/12 candidates before the crawlers read
+    # https-subs.txt. This is the Step 13 half of the append-and-delete flow.
+    merge_forward
 
     # --- 1. waymore (user: venv in ~/waymore, run there, then move file) ---
     local wayvenv; wayvenv="$(venv_activate "$HOME/waymore")"
@@ -882,7 +944,12 @@ step_crawl() {
         if command -v anew >/dev/null 2>&1; then
             if echo "$DOMAIN" | gau --threads 10 --subs 2>>"$LOG" | anew "$OUTDIR/gauurls.txt" >>"$LOG" 2>&1; then
                 local ng=0; ng=$(grep -c 'http' "$OUTDIR/gauurls.txt" 2>/dev/null || true)
-                ok "gau → gauurls.txt (${ng:-0} URLs)"; ran=$((ran + 1))
+                if [ "${ng:-0}" -eq 0 ]; then
+                    warn "gau returned 0 URLs — providers unreachable/rate-limited? config: ~/.gau.toml; debug: echo ${DOMAIN} | gau --subs --verbose"
+                else
+                    ok "gau → gauurls.txt (${ng:-0} URLs)"
+                fi
+                ran=$((ran + 1))
             else
                 err "gau FAILED (exit=$?) — see ${LOG}"
                 rm -f "$OUTDIR/gauurls.txt"   # never merge a partial crawl
@@ -890,6 +957,10 @@ step_crawl() {
         else
             warn "anew not found — gau output written directly"
             if echo "$DOMAIN" | gau --threads 10 --subs > "$OUTDIR/gauurls.txt" 2>>"$LOG"; then
+                local ng=0; ng=$(grep -c 'http' "$OUTDIR/gauurls.txt" 2>/dev/null || true)
+                if [ "${ng:-0}" -eq 0 ]; then
+                    warn "gau returned 0 URLs — providers unreachable/rate-limited? config: ~/.gau.toml; debug: echo ${DOMAIN} | gau --subs --verbose"
+                fi
                 ran=$((ran + 1))
             else
                 err "gau FAILED (exit=$?) — see ${LOG}"
@@ -1077,22 +1148,22 @@ step_crawl() {
         err "filter.sh FAILED (exit=$?) — domain mismatch or input problem, see ${LOG}"
     fi
 
-    # --- 10. gf-extract.sh: gf-pattern classification of param URLs ---
-    #   ./gf-extract.sh check/param-urls.txt check/gf
+    # --- 10. gf-scripts/gf-extract.sh: gf-pattern classification of param URLs ---
+    #   ./gf-scripts/gf-extract.sh check/param-urls.txt check/gf
     #   ($1 must be the input FILE — passing the bare "check" dir errors
-    #    at gf-extract.sh line 21; args are explicit here to avoid that)
-    local gfex="$SWARM_DIR/gf-extract.sh"
+    #    at gf-scripts/gf-extract.sh line 21; args are explicit here to avoid that)
+    local gfex="$SWARM_DIR/gf-scripts/gf-extract.sh"
     if [ ! -s "$OUTDIR/check/param-urls.txt" ]; then
         warn "check/param-urls.txt missing/empty (filter.sh) — gf-extract skipped"
         skipped=$((skipped + 1))
     elif [ ! -f "$gfex" ]; then
-        warn "gf-extract.sh not found in ${SWARM_DIR} — skipped"
+        warn "gf-scripts/gf-extract.sh not found in ${SWARM_DIR} — skipped"
         skipped=$((skipped + 1))
     elif ! command -v gf >/dev/null 2>&1; then
         warn "gf not found (go install github.com/tomnomnom/gf@latest) — skipped"
         skipped=$((skipped + 1))
     elif [ ! -d "$HOME/.gf" ]; then
-        warn "gf patterns missing at ${HOME}/.gf — run ./sync-gf-patterns.sh (bundled in gf-patterns/) — skipped"
+        warn "gf patterns missing at ${HOME}/.gf — run ./gf-scripts/sync-gf-patterns.sh (bundled in gf-patterns/) — skipped"
         skipped=$((skipped + 1))
     elif ( cd "$OUTDIR" && bash "$gfex" check/param-urls.txt check/gf ) >>"$LOG" 2>&1; then
         local ngf=0 ngf_urls=0
@@ -1108,7 +1179,7 @@ step_crawl() {
             ran=$((ran + 1))
         fi
     else
-        err "gf-extract.sh FAILED (exit=$?) — see ${LOG}"
+        err "gf-scripts/gf-extract.sh FAILED (exit=$?) — see ${LOG}"
     fi
 
     # step verdict
@@ -1140,6 +1211,11 @@ step_highvalue() {
 
     # fresh run: drop previous results so a skipped/failed rerun can't show stale hits
     rm -f "$sdir"/high-value-*.json "$sdir/high-value-results.txt"
+
+    # Step 14 half of the append-and-delete flow. Step 13 normally already
+    # appended these; regenerating and appending again is idempotent because
+    # _append_unique dedupes. It also covers a skipped/failed Step 13.
+    merge_forward
 
     local miss=0
     if ! command -v ffuf >/dev/null 2>&1; then
@@ -1599,9 +1675,9 @@ step_zone_transfer
 
 # Step 11 is manual.
 step_banner 11 "Directory bruteforce — MANUAL"
-warn "NOT automated — run ./dir-bruteforce.sh yourself (README → Manual → Step 11)"
+warn "NOT automated — run ./bruteforce/dir-bruteforce.sh yourself (README → Manual → Step 11)"
 info "Full guide: README.md → Manual → Step 11"
-note_result "skip" "11 · Directory bruteforce" "manual — ./dir-bruteforce.sh; README → Manual"
+note_result "skip" "11 · Directory bruteforce" "manual — ./bruteforce/dir-bruteforce.sh; README → Manual"
 # Step 11 manual notice: see README -> Manual -> Step 11.
 
 step_banner 12 "Public files (robots / security.txt / sitemaps)"

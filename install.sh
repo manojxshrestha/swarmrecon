@@ -319,14 +319,52 @@ else
 fi
 
 # ================================================================
+#  gau — Step 13 archive URL provider config
+#  Created here rather than edited by hand. Create-only: an existing
+#  ~/.gau.toml is never overwritten (remove it and re-run to regenerate).
+# ================================================================
+GAU_CONFIG="$HOME/.gau.toml"
+echo "[*] gau config → ${GAU_CONFIG}"
+if [ -f "$GAU_CONFIG" ]; then
+    echo "[+] gau config: already present — leaving it unchanged"
+else
+    if cat > "$GAU_CONFIG" <<'GAU_CONFIG_EOF'
+threads = 20
+verbose = false
+retries = 5
+subdomains = true
+parameters = false
+providers = ["wayback","commoncrawl","otx","urlscan"]
+blacklist = ["ttf","woff","svg","png","jpg","gif","ico","css","pdf","mp4","mp3"]
+json = false
+
+[urlscan]
+  apikey = ""
+
+[filters]
+  from = ""
+  to = ""
+  matchstatuscodes = []
+  matchmimetypes = []
+  filterstatuscodes = []
+  filtermimetypes = ["image/png","image/jpg","image/svg+xml","image/gif"]
+GAU_CONFIG_EOF
+    then
+        echo "[+] gau config: written (${GAU_CONFIG})"
+    else
+        echo "[!] gau config: could not write ${GAU_CONFIG} — Step 13 gau may use defaults"
+    fi
+fi
+
+# ================================================================
 #  GF patterns — copy into ~/.gf for global gf(1) access (repo stays source)
 # ================================================================
 echo "[*] GF patterns → $HOME/.gf"
-if "$SCRIPT_DIR/sync-gf-patterns.sh"; then
+if "$SCRIPT_DIR/gf-scripts/sync-gf-patterns.sh"; then
     GF_COUNT=$(ls "$HOME/.gf/"*.json 2>/dev/null | wc -l | tr -d ' ')
     echo "[+] GF patterns ready → ~/.gf/ ($GF_COUNT patterns)"
 else
-    echo "[!] GF pattern sync failed; run ./sync-gf-patterns.sh"
+    echo "[!] GF pattern sync failed; run ./gf-scripts/sync-gf-patterns.sh"
 fi
 
 echo "[+] dependencies ready."

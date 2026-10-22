@@ -5,7 +5,8 @@
 # is already installed; only missing components get installed. Markers:
 #   ~/ctfr/venv/.deps-ok      (ctfr requirements done)
 #   ~/subenum/.install-done   (subenum's own install.sh done)
-# Intel/OSINT tools (steps 3-4) are existence-checked (.git / binary) too.
+# Intel/OSINT tools (steps 3-4) are existence-checked (.git / binary) too;
+# uv is installed automatically when missing.
 # Wordlists ship with the repo; GF patterns are synced into ~/.gf.
 set -euo pipefail
 
@@ -203,7 +204,7 @@ PUREDNS_BIN="$HOME/go/bin/puredns"
 
 echo "[*] puredns"
 if command -v puredns >/dev/null 2>&1 || [ -x "$PUREDNS_BIN" ]; then
-    echo "[+] puredns: already installed (${PUREDNS_BIN})"
+    echo "[+] puredns: already installed ($(command -v puredns 2>/dev/null || printf '%s' "$PUREDNS_BIN"))"
 else
     if ! command -v go >/dev/null 2>&1; then
         echo "[-] go not found — needed for puredns (install Go, re-run)"
@@ -301,15 +302,153 @@ else
 fi
 
 # ================================================================
+#  ProjectDiscovery httpx + dnsx (Steps 6/7/13)
+#  python3-httpx (pip) ships the same binary name and rejects -threads, so a
+#  Python CLI in /usr/bin shadows the PD binary and live probes silently
+#  return 0 hosts. Keep the PD binary in ~/.local/bin, which both this script
+#  and swarmrecon.sh prepend to PATH.
+# ================================================================
+TOOLS_BIN="$HOME/.local/bin"
+mkdir -p "$TOOLS_BIN"
+
+is_pd_httpx() {  # $1 = candidate binary
+    local h
+    h="$("$1" -h 2>&1 || true)"
+    case "$h" in *"-threads"*) return 0 ;; esac
+    return 1
+}
+
+echo "[*] ProjectDiscovery httpx"
+# A real go-installed binary is preferred over a symlink to a copy elsewhere,
+# so a fresh setup always has a reproducible, verifiable build. If
+# ~/.local/bin/httpx is already the PD binary, skip.
+if [ -x "$TOOLS_BIN/httpx" ] && is_pd_httpx "$TOOLS_BIN/httpx"; then
+    echo "[+] httpx: ProjectDiscovery already installed (${TOOLS_BIN}/httpx)"
+elif command -v go >/dev/null 2>&1; then
+    echo "[*] go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest → ${TOOLS_BIN}..."
+    rm -f "$TOOLS_BIN/httpx"   # drop a stale symlink/shim before installing
+    if GOBIN="$TOOLS_BIN" go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest; then
+        echo "[+] httpx: installed (${TOOLS_BIN}/httpx)"
+    else
+        echo "[!] httpx: go install FAILED — Steps 6/7/13 live probes will be empty"
+    fi
+else
+    echo "[-] go not found — cannot install httpx (install Go, re-run)"
+fi
+
+# Prove the binary is the ProjectDiscovery Go build (not python3-httpx).
+if [ -x "$TOOLS_BIN/httpx" ]; then
+    hx_module="$(go version -m "$TOOLS_BIN/httpx" 2>/dev/null \
+        | awk '$1=="path"{print $2; exit}' || true)"
+    if [ "$hx_module" = "github.com/projectdiscovery/httpx/cmd/httpx" ] \
+        && is_pd_httpx "$TOOLS_BIN/httpx"; then
+        echo "[+] httpx: verified Go build ($( "$TOOLS_BIN/httpx" -version 2>&1 | awk '/Current Version/{print $NF; exit}' || true))"
+    else
+        echo "[!] httpx: ${TOOLS_BIN}/httpx is NOT the ProjectDiscovery Go binary (module: ${hx_module:-unknown})"
+    fi
+fi
+
+echo "[*] dnsx"
+DNSX_BIN="$(go env GOPATH 2>/dev/null || true)/bin/dnsx"
+if command -v dnsx >/dev/null 2>&1 || [ -x "$DNSX_BIN" ]; then
+    echo "[+] dnsx: already installed ($(command -v dnsx 2>/dev/null || printf '%s' "$DNSX_BIN"))"
+elif command -v go >/dev/null 2>&1; then
+    echo "[*] dnsx not found — installing → ${TOOLS_BIN}..."
+    if GOBIN="$TOOLS_BIN" go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest; then
+        echo "[+] dnsx: installed"
+    else
+        echo "[!] dnsx: install FAILED — Steps 7/13 dnsx slices will skip"
+    fi
+else
+    echo "[-] dnsx: go not found — skipped (Steps 7/13 dnsx slices will skip)"
+fi
+
+# ================================================================
+#  URL discovery + crawl tooling (Step 13)
+#  gau · uro · gf · katana · gospider · hakrawler → ~/.local/bin
+#  waymore → ~/waymore/venv (Step 13 activates that venv)
+# ================================================================
+echo "[*] crawl/URL tools (step 13)"
+CRAWL_TOOLS=(
+    "gau|github.com/lc/gau/v2/cmd/gau@latest"
+    "gf|github.com/tomnomnom/gf@latest"
+    "katana|github.com/projectdiscovery/katana/cmd/katana@latest"
+    "gospider|github.com/jaeles-project/gospider@latest"
+    "hakrawler|github.com/hakluke/hakrawler@latest"
+)
+for spec in "${CRAWL_TOOLS[@]}"; do
+    tool="${spec%%|*}"
+    module="${spec#*|}"
+    if command -v "$tool" >/dev/null 2>&1 || [ -x "$TOOLS_BIN/$tool" ]; then
+        echo "[+] ${tool}: already installed"
+    elif command -v go >/dev/null 2>&1; then
+        echo "[*] ${tool} — installing → ${TOOLS_BIN}..."
+        if GOBIN="$TOOLS_BIN" go install "$module" 2>/dev/null; then
+            echo "[+] ${tool}: installed"
+        else
+            echo "[!] ${tool}: install FAILED — its Step 13 slice will skip"
+        fi
+    else
+        echo "[-] ${tool}: go not found — skipped (its Step 13 slice will skip)"
+    fi
+done
+
+# uro is a Python tool (not a Go module) — install it with pipx
+echo "[*] uro"
+if command -v uro >/dev/null 2>&1 || [ -x "$TOOLS_BIN/uro" ]; then
+    echo "[+] uro: already installed"
+elif command -v pipx >/dev/null 2>&1; then
+    echo "[*] uro — installing (pipx)..."
+    if pipx install uro >/dev/null 2>&1; then
+        echo "[+] uro: installed"
+    else
+        echo "[!] uro: install FAILED — merging falls back to plain sort -u"
+    fi
+else
+    echo "[-] uro: pipx not found — merging falls back to plain sort -u"
+fi
+
+echo "[*] waymore (Step 13 venv)"
+if [ -x "$HOME/waymore/venv/bin/waymore" ] || [ -x "$HOME/waymore/.venv/bin/waymore" ]; then
+    echo "[+] waymore: already installed"
+else
+    mkdir -p "$HOME/waymore"
+    if command -v uv >/dev/null 2>&1; then
+        uv venv "$HOME/waymore/venv" &>/dev/null || true
+        uv pip install --python "$HOME/waymore/venv/bin/python" waymore &>/dev/null || true
+    else
+        python3 -m venv "$HOME/waymore/venv" &>/dev/null || true
+        "$HOME/waymore/venv/bin/pip" install --quiet waymore &>/dev/null || true
+    fi
+    if [ -x "$HOME/waymore/venv/bin/waymore" ] || [ -x "$HOME/waymore/.venv/bin/waymore" ]; then
+        echo "[+] waymore: installed (${HOME}/waymore/venv)"
+    else
+        echo "[!] waymore: install FAILED — Step 13 waymore slice will skip"
+    fi
+fi
+
+# ================================================================
 #  Intel + OSINT tooling (steps 3-4; openswarm install.sh parity)
 #  msftrecon · Scopify · Spoofy · cloud_enum → ~/.local/bin/<repo>/venv
 #  theHarvester → ~/theHarvester/.venv          (uv-based, check-first)
 # ================================================================
 echo "[*] intel/OSINT tools (steps 3-4)"
+# uv powers the intel tools but is not a core prereq — install it here when
+# missing so a plain `./install.sh` really produces a complete setup.
 if ! command -v uv >/dev/null 2>&1; then
-    echo "[-] uv not found — intel tools skipped (msftrecon/Scopify/Spoofy/cloud_enum/theHarvester)"
-    echo "    install uv, then re-run ./install.sh:"
-    echo "    curl -LsSf https://astral.sh/uv/install.sh | sh"
+    echo "[*] uv not found — installing (astral.sh)..."
+    if curl -LsSf https://astral.sh/uv/install.sh | sh >/dev/null 2>&1; then
+        export PATH="$HOME/.local/bin:$HOME/.cargo/bin:$PATH"
+    fi
+    if command -v uv >/dev/null 2>&1; then
+        echo "[+] uv: installed ($(command -v uv))"
+    fi
+fi
+
+if ! command -v uv >/dev/null 2>&1; then
+    echo "[-] uv unavailable — intel tools skipped (msftrecon/Scopify/Spoofy/cloud_enum/theHarvester)"
+    echo "    manual: curl -LsSf https://astral.sh/uv/install.sh | sh"
+    echo "    then re-run ./install.sh"
 else
     TOOLS_DIR="$HOME/.local/bin"
     mkdir -p "$TOOLS_DIR"

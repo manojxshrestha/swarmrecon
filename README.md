@@ -73,8 +73,9 @@ structure. `swarmrecon.sh` encodes that whole playbook:
 git clone https://github.com/manojxshrestha/swarmrecon.git && cd swarmrecon
 
 # 2. Install deps (wappalyzer + chromium, ctfr, unfurl, puredns + massdns,
-#    subenum, GF patterns; plus intel/OSINT tools via uv — msftrecon ·
-#    Scopify · Spoofy · cloud_enum · theHarvester)
+#    subenum, PD httpx + dnsx, gau/uro/gf/katana/gospider/hakrawler, waymore,
+#    GF patterns; installs uv when missing, then intel/OSINT tools —
+#    msftrecon · Scopify · Spoofy · cloud_enum · theHarvester)
 ./install.sh
 ```
 
@@ -83,13 +84,20 @@ git clone https://github.com/manojxshrestha/swarmrecon.git && cd swarmrecon
 > sync likewise skips patterns already present and identical in `~/.gf`.
 > It covers `wappalyzer`, Playwright Chromium, `ctfr` (→ `~/ctfr`, own venv),
 > `puredns` + `massdns` (→ Go bin + `/usr/local/bin`), `subenum` (→ `~/subenum`,
-> runs its own `install.sh`), and **GF patterns** (`./gf-scripts/sync-gf-patterns.sh` copies
-> `gf-patterns/*.json` → `~/.gf`, skips the manifest, prunes stale files).
-> With `uv` present it also sets up the step-3/4 intel tools — `msftrecon`,
-> `Scopify`, `Spoofy`, `cloud_enum` (→ `~/.local/bin/<repo>`, own venv) and
-> `theHarvester` (→ `~/theHarvester`); without `uv` they're skipped with a hint.
-> Everything else must already be on your `PATH`
-> (see [Prerequisites](#prerequisites)). Wordlists are bundled in `wordlists/`.
+> runs its own `install.sh`), **ProjectDiscovery `httpx` + `dnsx`**, the Step 13
+> URL/crawl tools (`gau`, `uro`, `gf`, `katana`, `gospider`, `hakrawler`),
+> `waymore` (→ `~/waymore/venv`), and **GF patterns**
+> (`./gf-scripts/sync-gf-patterns.sh` copies `gf-patterns/*.json` → `~/.gf`,
+> skips the manifest, prunes stale files).
+> `uv` is installed automatically when missing (astral.sh); the step-3/4 intel
+> tools then follow — `msftrecon`, `Scopify`, `Spoofy`, `cloud_enum`
+> (→ `~/.local/bin/<repo>`, own venv) and `theHarvester` (→ `~/theHarvester`).
+> **`httpx` collision handled:** the PD binary is built with
+> `go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest` into
+> `~/.local/bin` (verified via `go version -m`), so it precedes — and shadows —
+> the unrelated `python3-httpx` CLI that pip may have put in `/usr/bin`.
+> Wordlists are bundled in `wordlists/`; everything else must already be on
+> your `PATH` (see [Prerequisites](#prerequisites)).
 
 ---
 
@@ -104,11 +112,11 @@ the run continues):
 | Core | `bash` (5.x), `curl`, `jq`, `python3`, `git` |
 | DNS | `dig`, `nslookup`, `whois` |
 | Scanning / fuzzing | `nmap`, `ffuf` |
-| ProjectDiscovery | `httpx`, `dnsx` |
-| URL discovery | `gau`, `anew`, `uro`, `hakrawler`, `katana`, `gospider` |
-| Classification | `gf` — patterns **bundled** in `gf-patterns/` (125 patterns, synced to `~/.gf` by `./install.sh`) |
-| Crawling | `waymore` — manual venv: `python3 -m venv ~/waymore/venv && ~/waymore/venv/bin/pip install waymore` (step 13 activates `~/waymore/venv`) |
-| Intel / OSINT (steps 3-4) | `theHarvester`, `msftrecon`, `Scopify`, `Spoofy`, `cloud_enum` — set up by `./install.sh` via `uv` |
+| ProjectDiscovery | `httpx`, `dnsx` — set up by `./install.sh`; the PD `httpx` is installed into `~/.local/bin` and verified with `go version -m` so it shadows any `python3-httpx` CLI |
+| URL discovery | `gau`, `anew`, `uro`, `hakrawler`, `katana`, `gospider` — `gau`/`uro`/`hakrawler`/`katana`/`gospider` installed by `./install.sh`; `anew` must already be on `PATH` |
+| Classification | `gf` — binary installed by `./install.sh`; patterns **bundled** in `gf-patterns/` (125 patterns, synced to `~/.gf` by `./install.sh`) |
+| Crawling | `waymore` — `./install.sh` creates `~/waymore/venv`; manual alternative: `python3 -m venv ~/waymore/venv && ~/waymore/venv/bin/pip install waymore` (step 13 activates `~/waymore/venv`) |
+| Intel / OSINT (steps 3-4) | `theHarvester`, `msftrecon`, `Scopify`, `Spoofy`, `cloud_enum` — set up by `./install.sh` (installs `uv` when missing) |
 
 ---
 
@@ -620,6 +628,9 @@ reads `~/.gf`, so:
 - **No runtime installs**: `swarmrecon.sh` never installs anything — missing tools
   are reported with the exact command needed to install them.
 - **Idempotent installer**: `install.sh` checks every component first and skips
-  what's already installed (markers for ctfr/subenum; `command -v` for tools);
-  the GF sync copies only missing/changed patterns and prunes stale ones —
-  safe to re-run any time.
+  what's already installed (markers for ctfr/subenum; `command -v` for tools;
+  `go version -m` for the PD `httpx` build); the GF sync copies only
+  missing/changed patterns and prunes stale ones — safe to re-run any time.
+  It installs `uv` itself when missing, and the PD `httpx` is built with
+  `go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest` into
+  `~/.local/bin` so it wins over a pip-installed `python3-httpx`.

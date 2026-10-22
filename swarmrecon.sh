@@ -172,6 +172,40 @@ repair_venv_python() {  # $1 = activate path
     return 0
 }
 
+# ---- ProjectDiscovery httpx resolution ----
+# python3-httpx (pip) installs a CLI with the same name. It rejects
+# -threads/-silent, so when it wins the PATH race Steps 6/7/13 quietly produce
+# 0 live hosts. These helpers detect a real PD binary anywhere on PATH and
+# put its directory first, so the pipeline works even when the Python CLI is
+# shadowing it in /usr/bin.
+_is_pd_httpx() {  # $1 = candidate binary
+    local h
+    h="$("$1" -h 2>&1 || true)"
+    case "$h" in *"-threads"*) return 0 ;; esac
+    return 1
+}
+
+resolve_pd_httpx() {
+    local cur d
+    local IFS=:
+    cur="$(command -v httpx 2>/dev/null || true)"
+    if [ -n "$cur" ] && _is_pd_httpx "$cur"; then
+        printf '%s' "$cur"
+        return 0
+    fi
+    # first httpx is missing or the Python CLI — hunt for a PD binary
+    for d in $PATH; do
+        [ -n "$d" ] || continue
+        [ -x "$d/httpx" ] || continue
+        if [ "$d/httpx" = "$cur" ]; then continue; fi
+        if _is_pd_httpx "$d/httpx"; then
+            printf '%s' "$d/httpx"
+            return 0
+        fi
+    done
+    return 1
+}
+
 # ---------- source merge (Steps 4/8/9/12 → Steps 13/14) ----------
 # The numbered step dirs hold candidates that the crawler and the high-value
 # hunt never consumed. merge_forward builds the two compatibility lists in
@@ -1637,10 +1671,30 @@ info "output → ${OUTDIR}/"
 
 # ProjectDiscovery httpx and python3-httpx share the same binary name. The
 # Python CLI rejects -threads/-silent, so steps 6/7/13 would silently produce
-# 0 live hosts. Warn once, up front, instead of debugging it downstream.
-hx_help="$(httpx -h 2>&1 || true)"
-if [[ "$hx_help" != *"-threads"* ]]; then
-    warn "httpx on PATH is not ProjectDiscovery httpx (python3-httpx collision) — steps 6/7/13 need the PD binary first in PATH"
+# 0 live hosts. Prefer a real PD binary (wherever it is on PATH) and warn
+# accurately when none exists.
+hx_first="$(command -v httpx 2>/dev/null || true)"
+hx_pd="$(resolve_pd_httpx || true)"
+if [ -z "$hx_pd" ]; then
+    if [ -n "$hx_first" ]; then
+        warn "httpx on PATH is not ProjectDiscovery httpx (python3-httpx collision) — no PD binary found; Steps 6/7/13 live probes will be empty. Fix: ./install.sh (or: go install github.com/projectdiscovery/httpx/cmd/httpx@latest)"
+    else
+        warn "httpx not found — Steps 6/7 live probes skipped (./install.sh installs ProjectDiscovery httpx)"
+    fi
+elif [ "$hx_first" != "$hx_pd" ]; then
+    # the PD dir is often on PATH but after /usr/bin — move it to the front
+    # (dropping any duplicate entry so the list stays clean)
+    hx_dir="$(dirname "$hx_pd")"
+    hx_rest=""
+    hx_oldifs="$IFS"; IFS=:
+    for hx_p in $PATH; do
+        [ -n "$hx_p" ] || continue
+        [ "$hx_p" = "$hx_dir" ] && continue
+        hx_rest="${hx_rest:+$hx_rest:}$hx_p"
+    done
+    IFS="$hx_oldifs"
+    PATH="$hx_dir${hx_rest:+:$hx_rest}"; export PATH
+    info "httpx → ${hx_pd} (ProjectDiscovery; python3-httpx collision avoided)"
 fi
 
 step_banner 1 "Technology discovery (Wappalyzer)"

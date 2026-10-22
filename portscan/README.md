@@ -59,7 +59,13 @@ that is deliberately what you want to scan.
 
 ## 2. Quick start
 
-Run it with no arguments to auto-detect the newest merged list:
+Install/verify the dependencies once (idempotent — existing tools are skipped):
+
+```bash
+./portscan/install.sh
+```
+
+Then run the workflow with no arguments to auto-detect the newest merged list:
 
 ```bash
 ./portscan/portscan.sh
@@ -108,10 +114,23 @@ Useful variants:
 
 | Tool | Purpose | Install |
 |---|---|---|
-| `nmap` | Service/version detection | `sudo apt-get install -y nmap` |
-| `masscan` | Fast port discovery (used by dnmasscan) | `git clone https://github.com/robertdavidgraham/masscan && cd masscan && make && sudo make install` |
-| `dnmasscan` | Resolve domains, then run masscan | Download to the repo root as `./dnmasscan` and `chmod +x` |
-| `brutespray` | Credential testing from nmap grepable output | `go install github.com/x90skysn3k/brutespray/v2@latest` |
+| `nmap` | Service/version detection | `./portscan/install.sh` (falls back to `sudo apt-get install -y nmap`) |
+| `masscan` | Fast port discovery (used by dnmasscan) | `./portscan/install.sh` (apt, else builds from source with `make && sudo make install`) |
+| `dnmasscan` | Resolve domains, then run masscan | `./portscan/install.sh` → repo root `./dnmasscan`; manual alternative: <https://github.com/rastating/dnmasscan> |
+| `brutespray` | Credential testing from nmap grepable output | `./portscan/install.sh` → `~/.local/bin/brutespray`; manual: `go install github.com/x90skysn3k/brutespray/v2@latest` |
+| `dig` | DNS resolution inside dnmasscan | `./portscan/install.sh` (falls back to `sudo apt-get install -y dnsutils`) |
+
+`./portscan/install.sh` is idempotent: every tool is checked first, only
+missing pieces are installed, and anything it cannot install prints the exact
+manual command (the script exits `1` if a component is still missing).
+
+`nmap`, `masscan` and `dig` need root. The installer asks for your sudo
+password when a privileged step is actually required — the same `sudo -v` flow
+`portscan.sh` uses — rather than assuming passwordless sudo. `masscan` is
+installed via apt when available; otherwise the script installs the build
+dependencies (`git make gcc libpcap-dev`), clones
+<https://github.com/robertdavidgraham/masscan>, then runs
+`make && sudo make install`.
 
 `dnmasscan` lookup order:
 
@@ -143,16 +162,20 @@ to slow the scan down.
 The script extracts unique IPs and open ports, then runs:
 
 ```bash
-nmap -sV \
+nmap -Pn -sV \
   -iL recon/<domain>/05b-ports/ips.txt \
   -p "$(cat recon/<domain>/05b-ports/ports.txt)" \
   -oG recon/<domain>/05b-ports/nmap-scan.gnmap
 ```
 
+`-Pn` is deliberate: masscan already proved those ports are open, so nmap must
+not drop a host whose ICMP echo is filtered (the default ping discovery would
+mark it down and skip `-sV`).
+
 The equivalent inline form is:
 
 ```bash
-nmap -sV \
+nmap -Pn -sV \
   -iL <(grep -oP 'Host: \K[0-9.]+' masscan.log | sort -u) \
   -p"$(grep -oP '\d+(?=/open)' masscan.log | sort -u | paste -sd,)" \
   -oG nmap-scan.gnmap

@@ -284,9 +284,16 @@ Or name the target explicitly:
 ./portscan/portscan.sh -d example.com
 ```
 
-The wrapper runs `dnmasscan --top-ports 1000` → `nmap -sV` → optional
+The wrapper runs `dnmasscan --top-ports 1000` → `nmap -Pn -sV` → optional
 `brutespray`. It prompts for your sudo password before dnMasscan and asks again
 before credential testing. Output goes to `recon/<domain>/05b-ports/`.
+
+First-time setup (idempotent — verifies/installs `nmap`, `masscan`,
+`dnmasscan`, `brutespray`, `dig`):
+
+```bash
+./portscan/install.sh
+```
 
 Common variants:
 
@@ -580,7 +587,8 @@ invoke them (steps 11 and the post-Step-5 port workflow are manual):
 | `merge/merge-sources.sh` | `./merge/merge-sources.sh -d <domain> [-o <outdir>]` | Builds `merge/merged-alive-domains.txt` + `merge/merged-https-subs.txt` from Step 4/8/9/12 outputs. Called automatically at the start of Steps 13 and 14; safe to run standalone. |
 | `gf-scripts/sync-gf-patterns.sh` | `./gf-scripts/sync-gf-patterns.sh` | Copies `gf-patterns/*.json` → `~/.gf` (skips identical, index excluded, prunes **only this repo's** previously-synced files — ownership-aware for shared `~/.gf`). Called by `install.sh`; run standalone after editing patterns. |
 | `bruteforce/dir-bruteforce.sh` | `./bruteforce/dir-bruteforce.sh` (interactive) · `./bruteforce/dir-bruteforce.sh --url <url> --wordlist <path>` | ffuf path discovery — **never auto-run** by the pipeline (step 11 = *skip*). Interactive mode shows a numbered wordlist menu (`Enter` = `common.txt`, or number/name/path); `--list-wordlists` prints it without scanning. Profiles `--profile light\|standard\|deep` + `--ext-profile`, plus `--plan <scan.json>`, `--dry-run`, `--force`, `--report-only`, `--target <domain>` (merges hosts under `directories/<domain>/`; `--fresh-aggregate` truncates it first). Output: `directories/<host>/` (evidence + reports). |
-| `portscan/portscan.sh` | `./portscan/portscan.sh` · `./portscan/portscan.sh -d <domain>` · `./portscan/portscan.sh -f <alive-domains.txt>` | Manual post-Step-5 workflow: `dnmasscan --top-ports 1000` → `nmap -sV` → optional `brutespray`. No-arg mode auto-detects the newest `recon/*/alive-domains.txt` and copies it to `portscan/alive-domains.txt`; sudo prompts for dnMasscan. Two confirmations (scan + credential testing); `--no-brute`, `--yes`, `--dry-run`, `--max-rate`, `--out`. Output: `recon/<domain>/05b-ports/`. See [`portscan/README.md`](portscan/README.md). |
+| `portscan/install.sh` | `./portscan/install.sh` | Idempotent setup for the manual port workflow: verifies/installs `nmap`, `masscan`, `dnmasscan` (→ repo root), `brutespray` (→ `~/.local/bin`), and `dig`. Safe to re-run. |
+| `portscan/portscan.sh` | `./portscan/portscan.sh` · `./portscan/portscan.sh -d <domain>` · `./portscan/portscan.sh -f <alive-domains.txt>` | Manual post-Step-5 workflow: `dnmasscan --top-ports 1000` → `nmap -Pn -sV` → optional `brutespray`. No-arg mode auto-detects the newest `recon/*/alive-domains.txt` and copies it to `portscan/alive-domains.txt`; sudo prompts for dnMasscan. Two confirmations (scan + credential testing); `--no-brute`, `--yes`, `--dry-run`, `--max-rate`, `--out`. Output: `recon/<domain>/05b-ports/`. See [`portscan/README.md`](portscan/README.md). |
 
 ---
 

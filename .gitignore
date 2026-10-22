@@ -6,6 +6,9 @@ recon/
 portscan/alive-domains*.txt
 portscan/05b-ports/
 
+# downloaded dnmasscan helper (portscan/install.sh fetches it)
+/dnmasscan
+
 # OS/editor noise
 .DS_Store
 *.swp

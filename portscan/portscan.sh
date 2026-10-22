@@ -76,8 +76,9 @@ Output:
 dnMasscan runs through sudo; the script prompts for your password first.
 
 Install hints:
-  dnmasscan   download to the repo root as ./dnmasscan, then chmod +x
-  brutespray  go install github.com/x90skysn3k/brutespray/v2@latest
+  ./portscan/install.sh          installs/verifies nmap · masscan · dnmasscan · brutespray
+  dnmasscan                     (or) download to the repo root as ./dnmasscan, then chmod +x
+  brutespray                    (or) go install github.com/x90skysn3k/brutespray/v2@latest
 EOF
   exit "${1:-0}"
 }
@@ -222,7 +223,7 @@ if [ -z "$DNMASSSCAN_BIN" ]; then
     DNMASSSCAN_BIN="$BASE_DIR/dnmasscan"
     log_warn "dnmasscan not found; dry-run assumes $DNMASSSCAN_BIN"
   else
-    die "dnmasscan not found (download it as ./dnmasscan, put it in tools/, or pass --dnmasscan)"
+    die "dnmasscan not found (run ./portscan/install.sh, or download it as ./dnmasscan, put it in tools/, or pass --dnmasscan)"
   fi
 fi
 
@@ -326,13 +327,13 @@ else
   log_info "IPs: $(wc -l < "$IPS_FILE" | tr -d ' ') · ports: $(cat "$PORTS_FILE")"
 fi
 
-log_info "Step 2/3 — nmap -sV"
+log_info "Step 2/3 — nmap -Pn -sV"
 if $DRY_RUN; then
   PORTS_ARG="<ports-from-masscan>"
 else
   PORTS_ARG="$(tr -d '\n' < "$PORTS_FILE")"
 fi
-run_cmd "$NMAP_BIN" -sV -iL "$IPS_FILE" -p "$PORTS_ARG" -oG "$NMAP_FILE"
+run_cmd "$NMAP_BIN" -Pn -sV -iL "$IPS_FILE" -p "$PORTS_ARG" -oG "$NMAP_FILE"
 
 if ! $DRY_RUN; then
   [ -s "$NMAP_FILE" ] || die "nmap produced no grepable output: $NMAP_FILE"

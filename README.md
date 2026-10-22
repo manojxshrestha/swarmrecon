@@ -128,20 +128,62 @@ the run continues):
 
 | Flag | Meaning |
 |------|---------|
-| `-d <domain>` | target domain (required) |
-| `-h` | usage |
+| `-d, --domain <domain>` | target domain (required) |
+| `-r, --resume` | resume at the first unfinished step |
+| `-f, --from <n>` | start at step `n` (1–14) |
+| `-h, --help` | usage |
 
 Notes:
 
 - Run it **from the repo directory** — outputs land in `recon/<domain>/` relative
   to your current working directory.
-- Every run truncates and rewrites `recon/<domain>/recon.log`.
+- Every run truncates and rewrites `recon/<domain>/recon.log` (including a
+  resume — the new log covers only the steps that actually run).
 - Colours auto-disable when output is piped or when `NO_COLOR` is set.
 - **Manual after Step 5:** port discovery and service brute-forcing are not
   automated — see [Port Discovery & Service Brute-Forcing](#port-discovery--service-brute-forcing-manual).
 - **Manual Step 11:** directory bruteforce is not automated — the pipeline
   records a *skip* row; run `./bruteforce/dir-bruteforce.sh` yourself
   (see [Directory Bruteforce](#directory-bruteforce-manual)).
+
+### Resume / restart from a step
+
+Stopped the run (Ctrl+C, terminal closed, reboot)? Don't redo Steps 1–12:
+
+```bash
+# continue at the first unfinished step (auto-detected)
+./swarmrecon.sh -d target.com --resume
+
+# or choose the step yourself
+./swarmrecon.sh -d target.com --from 13
+```
+
+How `--resume` decides:
+
+1. Every completed step appends `step|status|epoch` to
+   `recon/<domain>/.swarmrecon-state` (latest line per step wins).
+2. Resume starts at the first step whose status is not `ok`; a previously
+   *skipped* step is retried (its missing tool may be installed now). At the
+   start of every run the steps that are about to execute are marked
+   `pending`, so an interruption always resumes at the right place even when
+   old artifacts from a previous run are still on disk.
+3. If there is no state file (a run from an older version), the same decision
+   is made from the step artifacts — e.g. `merged-crawl.txt` missing means
+   Step 13 did not finish.
+4. If every step is already `ok`, it prints `nothing to do` and exits without
+   running anything.
+
+Steps before the start point are left untouched and appear in the summary as
+`− not run — resumed at step N`. Step 11 is manual and always recorded as
+`skip`.
+
+`--from <n>` is an explicit override: it skips the detection and starts at `n`
+(handy to re-run a single step, e.g. `--from 14`). It cannot be combined with
+`--resume`.
+
+> `--resume` assumes the earlier steps' outputs are still in
+> `recon/<domain>/`. Starting at a step whose inputs are missing makes that
+> step skip or fail — use a full run (no flags) in that case.
 
 ---
 
@@ -629,6 +671,12 @@ reads `~/.gf`, so:
   failed run can never pass off stale results as new. Outputs that feed later
   steps (ctfr, subenum, crawl + merged files) are cleared *before their guards*,
   so even a skipped re-run can't leak old data into a later merge.
+- **Resumable**: each step records `step|status|epoch` in
+  `recon/<domain>/.swarmrecon-state` once it finishes. `--resume` reads the
+  latest status per step and starts at the first one that is not `ok`
+  (falling back to artifact detection when the state file is absent). Earlier
+  steps are not re-run and are reported as skipped; the summary still lists all
+  14 rows. A fresh run (no flags) truncates the state file.
 - **Exit-code semantics**: steps built from informational commands (DNS queries
   that legitimately return NXDOMAIN, `curl` of possibly-absent files) are judged by
   *output existence*, not raw exit codes — that's why some blocks are written as

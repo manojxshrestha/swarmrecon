@@ -27,18 +27,39 @@ OUTDIR=""
 LOG=""
 
 usage() {
-    printf '%sUsage:%s ./swarmrecon.sh -d <domain>\n' "$C_BOLD" "$C_RESET"
+    printf '%sUsage:%s ./swarmrecon.sh -d <domain> [--resume | --from <n>]\n' "$C_BOLD" "$C_RESET"
+    printf '  %s-d, --domain <domain>%s  target domain (required)\n' "$C_DIM" "$C_RESET"
+    printf '  %s-r, --resume%s          resume at the first unfinished step\n' "$C_DIM" "$C_RESET"
+    printf '  %s-f, --from <n>%s        start at step n (1-14)\n' "$C_DIM" "$C_RESET"
+    printf '  %s-h, --help%s            show this help\n' "$C_DIM" "$C_RESET"
     printf '  %sOutput:%s recon/<domain>/<NN-step>/\n' "$C_DIM" "$C_RESET"
-    exit 1
+    exit "${1:-1}"
 }
 
-while getopts ":d:h" opt; do
-    case "$opt" in
-        d) DOMAIN="$OPTARG" ;;
-        h|*) usage ;;
+RESUME=false
+START_STEP=1
+FROM_SET=false
+
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -d|--domain)  [ $# -ge 2 ] || usage 1; DOMAIN="$2"; shift 2 ;;
+        -r|--resume)  RESUME=true; shift ;;
+        -f|--from)    [ $# -ge 2 ] || usage 1; START_STEP="$2"; FROM_SET=true; shift 2 ;;
+        -h|--help)    usage 0 ;;
+        *)            usage 1 ;;
     esac
 done
-[ -z "$DOMAIN" ] && usage
+[ -z "$DOMAIN" ] && usage 1
+
+if ! [[ "$START_STEP" =~ ^[0-9]+$ ]] || [ "$START_STEP" -lt 1 ] || [ "$START_STEP" -gt 14 ]; then
+    printf '%s[!]%s --from must be a step number between 1 and 14 (got: %s)\n' \
+        "$C_RED" "$C_RESET" "$START_STEP" >&2
+    exit 1
+fi
+if $RESUME && $FROM_SET; then
+    printf '%s[!]%s use either --resume or --from <n>, not both\n' "$C_RED" "$C_RESET" >&2
+    exit 1
+fi
 
 # DOMAIN is used as a path component (recon/<DOMAIN>/) and in theHarvester -d
 # — accept plain hostnames only: no slashes, no shell metas.
@@ -1664,6 +1685,123 @@ step_osint() {
 }
 
 # ================================================================
+#  Resume / --from (step level)
+# ================================================================
+# Every completed step appends one line to recon/<domain>/.swarmrecon-state:
+#     <step>|<status>|<epoch>
+# The last line for a step wins. At the start of a run every step that is about
+# to execute is marked "pending", so an interruption always resolves to the
+# right step even when old artifacts from a previous run are still on disk.
+# --resume starts at the first step whose status is not "ok" (11 is manual and
+# always skipped). If the state file is missing (an interrupted run from an
+# older version), the same decision is made from the step artifacts instead.
+STATE_FILE="$OUTDIR/.swarmrecon-state"
+
+_state_status() {  # $1=step → last recorded status (empty when unknown)
+    [ -s "$STATE_FILE" ] || return 0
+    awk -F'|' -v n="$1" '$1==n { s=$2 } END { print s }' "$STATE_FILE" 2>/dev/null
+}
+
+_prune_state_before() {  # $1=step → forget everything recorded for >= step
+    [ -s "$STATE_FILE" ] || return 0
+    local tmp="$STATE_FILE.tmp.$$"
+    if awk -F'|' -v s="$1" '$1+0 < s' "$STATE_FILE" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$STATE_FILE"
+    else
+        rm -f "$tmp"
+    fi
+}
+
+_set_pending_steps() {  # $1=first step → mark it and every later step pending
+    local n
+    local steps=(1 2 3 4 5 6 7 8 9 10 12 13 14)   # 11 is manual
+    for n in "${steps[@]}"; do
+        [ "$n" -ge "$1" ] || continue
+        printf '%s|pending|%s\n' "$n" "$(date +%s)" >> "$STATE_FILE"
+    done
+}
+
+_step_artifact_done() {  # $1=step → true when that step's outputs exist
+    case "$1" in
+        1)  [ -s "$OUTDIR/01-wappalyzer/technologies.json" ] ;;
+        2)  compgen -G "$OUTDIR/02-dns-whois/*" >/dev/null ;;
+        3)  [ -s "$OUTDIR/03-intel/domain_info_general.txt" ] \
+            || [ -s "$OUTDIR/03-intel/azure_tenant_domains.txt" ] \
+            || [ -s "$OUTDIR/03-intel/scopify.txt" ] \
+            || [ -s "$OUTDIR/03-intel/spoof.txt" ] \
+            || [ -s "$OUTDIR/03-intel/cloud_enum.txt" ] ;;
+        4)  [ -s "$OUTDIR/04-osint/theharvester_subdomains.json" ] \
+            || [ -s "$OUTDIR/04-osint/subdomains.txt" ] ;;
+        5)  [ -s "$OUTDIR/05-nmap/nmap-full.txt" ] ;;
+        6)  [ -s "$OUTDIR/06-ctfr/ctfr-subdomains.txt" ] ;;
+        7)  [ -s "$OUTDIR/https-subs.txt" ] && [ -s "$OUTDIR/alive-domains.txt" ] ;;
+        8)  [ -s "$OUTDIR/08-puredns/puredns-subdomains.txt" ] ;;
+        9)  [ -s "$OUTDIR/09-vhost/vhost-mc-all.json" ] ;;
+        10) compgen -G "$OUTDIR/10-zone-transfer/*" >/dev/null ;;
+        12) compgen -G "$OUTDIR/12-robots-sitemap/*" >/dev/null ;;
+        13) [ -s "$OUTDIR/merged-crawl.txt" ] && [ -d "$OUTDIR/check" ] ;;
+        14) [ -s "$OUTDIR/14-high-value/high-value-results.json" ] ;;
+        *)  return 1 ;;
+    esac
+}
+
+_detect_start_step() {  # prints the first unfinished step, or 0 if all done
+    local n st
+    local steps=(1 2 3 4 5 6 7 8 9 10 12 13 14)   # 11 is manual
+    for n in "${steps[@]}"; do
+        st="$(_state_status "$n")"
+        if [ -n "$st" ]; then
+            # a recorded skip is retried: the missing tool may be installed now
+            [ "$st" = "ok" ] || { printf '%s' "$n"; return 0; }
+        elif ! _step_artifact_done "$n"; then
+            printf '%s' "$n"; return 0
+        fi
+    done
+    printf '0'
+}
+
+if $RESUME; then
+    _resume_src="artifacts"
+    [ -s "$STATE_FILE" ] && _resume_src="run state"
+    START_STEP="$(_detect_start_step)"
+    if [ "$START_STEP" = "0" ]; then
+        info "resume: every step in ${OUTDIR}/ is already complete — nothing to do"
+        exit 0
+    fi
+    _prune_state_before "$START_STEP"
+    _set_pending_steps "$START_STEP"
+    info "resume: starting at step ${START_STEP} (detected from ${_resume_src})"
+elif $FROM_SET; then
+    _prune_state_before "$START_STEP"
+    _set_pending_steps "$START_STEP"
+    info "start: --from ${START_STEP} (earlier steps left untouched)"
+else
+    : > "$STATE_FILE"   # fresh run: drop the previous run's step state
+    _set_pending_steps 1
+fi
+
+if [ "$START_STEP" -gt 1 ] && [ ! -d "$OUTDIR/01-wappalyzer" ]; then
+    warn "no earlier output found in ${OUTDIR}/ — step ${START_STEP} may be missing prerequisites"
+fi
+
+run_step() {  # $1=step  $2=banner title  $3=summary label  $4...=step function
+    local n="$1" title="$2" label="$3"
+    shift 3
+    if [ "$n" -lt "$START_STEP" ]; then
+        note_result "skip" "$label" "not run — resumed at step ${START_STEP}"
+        return 0
+    fi
+    step_banner "$n" "$title"
+    local before=${#SUMMARY[@]} st="fail"
+    "$@"
+    if [ ${#SUMMARY[@]} -gt "$before" ]; then
+        IFS='|' read -r st _ _ <<< "${SUMMARY[$(( ${#SUMMARY[@]} - 1 ))]}"
+    fi
+    printf '%s|%s|%s\n' "$n" "$st" "$(date +%s)" >> "$STATE_FILE"
+    _log "[state] step ${n} → ${st}"
+}
+
+# ================================================================
 #  Run
 # ================================================================
 banner
@@ -1697,51 +1835,55 @@ elif [ "$hx_first" != "$hx_pd" ]; then
     info "httpx → ${hx_pd} (ProjectDiscovery; python3-httpx collision avoided)"
 fi
 
-step_banner 1 "Technology discovery (Wappalyzer)"
-step_wappalyzer
+run_step 1 "Technology discovery (Wappalyzer)" \
+    "1 · Wappalyzer" step_wappalyzer
 
-step_banner 2 "DNS + WHOIS (dig / whois / nslookup)"
-step_dns_whois
+run_step 2 "DNS + WHOIS (dig / whois / nslookup)" \
+    "2 · DNS + WHOIS" step_dns_whois
 
-step_banner 3 "Passive intel (whois · msftrecon · Scopify · Spoofy · cloud_enum)"
-step_intel
+run_step 3 "Passive intel (whois · msftrecon · Scopify · Spoofy · cloud_enum)" \
+    "3 · Intel" step_intel
 
-step_banner 4 "OSINT (theHarvester — subdomains + emails)"
-step_osint
+run_step 4 "OSINT (theHarvester — subdomains + emails)" \
+    "4 · OSINT" step_osint
 
-step_banner 5 "Port scan (nmap · single pass)"
-step_nmap
+run_step 5 "Port scan (nmap · single pass)" \
+    "5 · Nmap port scan" step_nmap
 
-step_banner 6 "Certificate Transparency (ctfr)"
-step_ctfr
+run_step 6 "Certificate Transparency (ctfr)" \
+    "6 · CT logs (ctfr)" step_ctfr
 
-step_banner 7 "Subdomain enumeration (subenum)"
-step_subenum
+run_step 7 "Subdomain enumeration (subenum)" \
+    "7 · Subenum" step_subenum
 
-step_banner 8 "DNS bruteforce (puredns + massdns)"
-step_puredns
+run_step 8 "DNS bruteforce (puredns + massdns)" \
+    "8 · DNS bruteforce" step_puredns
 
-step_banner 9 "Vhost fuzzing (ffuf)"
-step_vhost_ffuf
+run_step 9 "Vhost fuzzing (ffuf)" \
+    "9 · Vhost fuzzing" step_vhost_ffuf
 
-step_banner 10 "Zone transfer (AXFR)"
-step_zone_transfer
+run_step 10 "Zone transfer (AXFR)" \
+    "10 · Zone transfer" step_zone_transfer
 
-# Step 11 is manual.
-step_banner 11 "Directory bruteforce — MANUAL"
-warn "NOT automated — run ./bruteforce/dir-bruteforce.sh yourself (README → Manual → Step 11)"
-info "Full guide: README.md → Manual → Step 11"
-note_result "skip" "11 · Directory bruteforce" "manual — ./bruteforce/dir-bruteforce.sh; README → Manual"
-# Step 11 manual notice: see README -> Manual -> Step 11.
+# Step 11 is manual (never resumed, but recorded so the summary stays complete).
+if [ "$START_STEP" -le 11 ]; then
+    step_banner 11 "Directory bruteforce — MANUAL"
+    warn "NOT automated — run ./bruteforce/dir-bruteforce.sh yourself (README → Manual → Step 11)"
+    info "Full guide: README.md → Manual → Step 11"
+    note_result "skip" "11 · Directory bruteforce" "manual — ./bruteforce/dir-bruteforce.sh; README → Manual"
+else
+    note_result "skip" "11 · Directory bruteforce" "not run — resumed at step ${START_STEP}"
+fi
+printf '%s|skip|%s\n' 11 "$(date +%s)" >> "$STATE_FILE"
 
-step_banner 12 "Public files (robots / security.txt / sitemaps)"
-step_robots_sitemap
+run_step 12 "Public files (robots / security.txt / sitemaps)" \
+    "12 · robots/sitemap" step_robots_sitemap
 
-step_banner 13 "Web crawling (waymore · gau · hakrawler · katana · gospider)"
-step_crawl
+run_step 13 "Web crawling (waymore · gau · hakrawler · katana · gospider)" \
+    "13 · Web crawl" step_crawl
 
-step_banner 14 "High-value paths (ffuf · secrets / disclosure / juicy files)"
-step_highvalue
+run_step 14 "High-value paths (ffuf · secrets / disclosure / juicy files)" \
+    "14 · High-value" step_highvalue
 
 # ---------------------------------------------------------------
 # Step N (TODO): add next recon steps here following the same shape:
@@ -1761,6 +1903,6 @@ for entry in "${SUMMARY[@]}"; do
         fail) printf '  %s✗%s %-18s %s%s%s\n' "$C_RED$C_BOLD" "$C_RESET" "$title" "$C_DIM" "$detail" "$C_RESET" ;;
     esac
 done
-nfiles=$(find "$OUTDIR" -type f ! -name 'recon.log' | wc -l | tr -d ' ')
+nfiles=$(find "$OUTDIR" -type f ! -name 'recon.log' ! -name '.swarmrecon-state' | wc -l | tr -d ' ')
 printf '\n  %s%s files%s in %s%s/%s\n' "$C_BOLD" "$nfiles" "$C_RESET" "$C_CYAN" "$OUTDIR" "$C_RESET"
 printf '  %slog:%s %s\n\n' "$C_DIM" "$C_RESET" "$LOG"

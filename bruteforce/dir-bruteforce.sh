@@ -102,6 +102,7 @@ Options (with --url / --plan):
   --rate <ms>           Request delay in ms (default 2 -> ~500 req/s)
   --target <domain>     Aggregate reports into directories/<domain>/
   --dry-run             Print plan without executing
+  --list-wordlists      List bundled wordlists and exit
   --force               Re-scan existing results (wipe evidence first)
   --report-only         Regenerate reports from existing evidence, no scan
 EOF
@@ -146,6 +147,39 @@ estimate_requests() {
     fi
   done
   echo "$total"
+}
+
+# ── List bundled wordlists (interactive shortcut / --list-wordlists) ───
+WL_MENU_FILES=()
+list_wordlists() {
+  WL_MENU_FILES=()
+  local f i=1 lines
+  if [ ! -d "$WL_DIR" ]; then
+    log_warn "Wordlist dir not found: $WL_DIR"
+    return 1
+  fi
+  while IFS= read -r f; do
+    case "$(basename "$f")" in
+      # Not directory/path lists — keep them out of the suggestion menu.
+      resolvers.txt|subdomains-top1million-20000.txt) continue ;;
+    esac
+    [ -f "$f" ] && WL_MENU_FILES+=("$f")
+  done < <(find "$WL_DIR" -maxdepth 1 -type f -printf '%p\n' 2>/dev/null | sort)
+
+  if [ ${#WL_MENU_FILES[@]} -eq 0 ]; then
+    log_warn "No directory wordlists in $WL_DIR — enter a full path"
+    return 1
+  fi
+
+  echo
+  echo "Available wordlists (${WL_DIR}):"
+  for f in "${WL_MENU_FILES[@]}"; do
+    lines=$(wc -l < "$f" 2>/dev/null | tr -d ' ')
+    printf '  %2d) %-32s %8s lines\n' "$i" "$(basename "$f")" "${lines:-?}"
+    i=$((i + 1))
+  done
+  echo
+  return 0
 }
 
 # ── Pre-flight: DNS + reachability ─────────────────────────────────────
@@ -833,16 +867,38 @@ if [ $# -eq 0 ]; then
     [ -z "$URL" ] && echo "(URL required)"
   done
   local_wordlist=""
+  default_wordlist=""
+  if list_wordlists; then
+    default_wordlist="$WL_DIR/common.txt"
+    [ -f "$default_wordlist" ] || default_wordlist="${WL_MENU_FILES[0]}"
+  fi
+  wl_choice=""
   while [ -z "$local_wordlist" ]; do
-    read -rp "Wordlist path: " local_wordlist || { echo; log_err "stdin closed"; exit 1; }
-    if [ -z "$local_wordlist" ]; then
-      echo "(wordlist path required)"
-    elif [ -f "$local_wordlist" ]; then
-      :
-    elif [ -f "$WL_DIR/$local_wordlist" ]; then
-      local_wordlist="$WL_DIR/$local_wordlist"
+    if [ -n "$default_wordlist" ]; then
+      read -rp "Wordlist [$(basename "$default_wordlist")] (number/name/path, 'l'=list): " wl_choice \
+        || { echo; log_err "stdin closed"; exit 1; }
     else
-      echo "Not found: $local_wordlist (tried as given and under $WL_DIR/)"
+      read -rp "Wordlist (number/name/path): " wl_choice \
+        || { echo; log_err "stdin closed"; exit 1; }
+    fi
+    case "$wl_choice" in
+      l|L|list) list_wordlists; continue ;;
+    esac
+    if [ -z "$wl_choice" ] && [ -n "$default_wordlist" ]; then
+      local_wordlist="$default_wordlist"
+    elif [[ "$wl_choice" =~ ^[0-9]+$ ]]; then
+      idx=$((wl_choice - 1))
+      if [ "$idx" -ge 0 ] && [ "$idx" -lt ${#WL_MENU_FILES[@]} ]; then
+        local_wordlist="${WL_MENU_FILES[$idx]}"
+      else
+        echo "Invalid number — choose 1-${#WL_MENU_FILES[@]}"
+      fi
+    elif [ -f "$wl_choice" ]; then
+      local_wordlist="$wl_choice"
+    elif [ -f "$WL_DIR/$wl_choice" ]; then
+      local_wordlist="$WL_DIR/$wl_choice"
+    else
+      echo "Not found: $wl_choice (try a number, a bare name, or a full path)"
       local_wordlist=""
     fi
   done
@@ -864,6 +920,7 @@ while [ $# -gt 0 ]; do
     --rate)       shift; RATE_MS="$1" ;;
     --target)     shift; TARGET_DOMAIN="$1" ;;
     --dry-run)    DRY_RUN="true" ;;
+    --list-wordlists) list_wordlists; exit 0 ;;
     --force)      FORCE="true" ;;
     --report-only) REPORT_ONLY="true" ;;
     --fresh-aggregate) FRESH_AGGREGATE="true" ;;

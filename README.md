@@ -470,14 +470,18 @@ flowchart TD
 
 | Mode | Command | What happens |
 |------|---------|--------------|
-| Interactive | `./bruteforce/dir-bruteforce.sh` | prompts `Target URL:` → `Wordlist path:` (bare names resolve under `wordlists/`), then scans the **whole list — no budget cap** |
+| Interactive | `./bruteforce/dir-bruteforce.sh` | prompts `Target URL:` → numbered wordlist menu (`Enter` = `common.txt`; number, bare name, or full path), then scans the **whole list — no budget cap** |
 | Single host | `./bruteforce/dir-bruteforce.sh --url <url> --wordlist <path>` | scripted; `--wordlist` is repeatable and **required** — there are no built-in lists |
 | Batch plan | `./bruteforce/dir-bruteforce.sh --plan <scan.json> --wordlist <path>` | walks `plans[]` (host · intent · profile · confidence) and skips entries with confidence < 0.5 |
 
 ```bash
 ./bruteforce/dir-bruteforce.sh
 # Target URL: https://example.com
-# Wordlist path: raft-medium-directories.txt   (bare name -> wordlists/, or a full path)
+# Wordlist [common.txt] (number/name/path, 'l'=list): raft-medium-directories.txt
+#   Enter = common.txt · number = menu entry · bare name = wordlists/ · or a full path
+#
+# Show the menu without starting a scan:
+./bruteforce/dir-bruteforce.sh --list-wordlists
 ```
 
 ### 2. How a scan runs
@@ -598,41 +602,55 @@ discovery → service brute-forcing exists only as a deliberate manual extension
 and hands off to `./bruteforce/dir-bruteforce.sh`
 (see [Directory Bruteforce](#directory-bruteforce-manual)).
 
+The diagram groups the pipeline into three phases — **discovery (1–5)**,
+**surface (6–10)**, and **content/delivery (11–14)** — so the manual branches,
+merge points, and final artifacts stay readable.
+
 ```mermaid
 flowchart TD
     classDef entry fill:#1e1b4b,stroke:#818cf8,stroke-width:2px,color:#e0e7ff
     classDef phase fill:#0f172a,stroke:#38bdf8,stroke-width:1.5px,color:#e2e8f0
-    classDef decision fill:#451a03,stroke:#f59e0b,stroke-width:2px,color:#fde68a
     classDef manual fill:#042f2e,stroke:#2dd4bf,stroke-width:1.5px,color:#ccfbf1
     classDef merge fill:#172554,stroke:#60a5fa,stroke-width:2px,color:#dbeafe
+    classDef artifact fill:#052e16,stroke:#4ade80,stroke-width:1.5px,color:#dcfce7
 
-    SETUP(["one-time setup — idempotent<br/>./install.sh · ./gf-scripts/sync-gf-patterns.sh<br/>tools + 125 patterns into ~/.gf"]):::manual --> Start
-    Start(["./swarmrecon.sh -d example.com"]):::entry --> S1
+    SETUP["ONE-TIME SETUP<br/>./install.sh · ./gf-scripts/sync-gf-patterns.sh"]:::manual --> RUN(["./swarmrecon.sh -d example.com"]):::entry
 
-    S1["1 · WAPPALYZER — tech fingerprint<br/>→ 01-wappalyzer/"]:::phase --> S2
-    S2["2 · DNS + WHOIS — dig · whois · nslookup<br/>→ 02-dns-whois/"]:::phase --> S3
-    S3["3 · PASSIVE INTEL — whois · msftrecon · Scopify<br/>Spoofy · cloud_enum → 03-intel/"]:::phase --> S4
-    S4["4 · OSINT — theHarvester: subdomains + emails<br/>→ 04-osint/"]:::phase --> S5
-    S5["5 · NMAP — single-pass port scan<br/>→ 05-nmap/"]:::phase --> PortDec
+    subgraph P1["1–5 · DISCOVERY"]
+        direction LR
+        S1["1 · Wappalyzer<br/>tech fingerprint<br/>→ 01-wappalyzer/"]:::phase --> S2["2 · DNS + WHOIS<br/>dig · whois · nslookup<br/>→ 02-dns-whois/"]:::phase
+        S2 --> S3["3 · Passive intel<br/>whois · msftrecon · Scopify<br/>Spoofy · cloud_enum<br/>→ 03-intel/"]:::phase
+        S3 --> S4["4 · OSINT<br/>theHarvester: subs + emails<br/>→ 04-osint/"]:::phase
+        S4 --> S5["5 · Nmap<br/>single-pass port scan<br/>→ 05-nmap/"]:::phase
+    end
 
-    PortDec{"deeper port work<br/>wanted?"}:::decision
-    PortDec -->|"yes — optional, manual"| Manual["masscan / dnmasscan → nmap -sV → brutespray<br/>deliberate authorization required — guide above"]:::manual
-    Manual --> S6
-    PortDec -->|"no"| S6
+    subgraph P2["6–10 · SURFACE"]
+        direction LR
+        S6["6 · CT logs<br/>ctfr: crt.sh + liveness<br/>live CT feeds Step 7<br/>→ 06-ctfr/"]:::phase --> S7["7 · Subenum<br/>multi-source gather + resolve<br/>root: https-subs.txt + alive-domains.txt"]:::phase
+        S7 --> S8["8 · DNS bruteforce<br/>puredns + massdns<br/>→ 08-puredns/"]:::phase
+        S8 --> S9["9 · Vhost fuzz<br/>Host-header discovery<br/>→ 09-vhost/"]:::phase
+        S9 --> S10["10 · Zone transfer<br/>AXFR per NS<br/>→ 10-zone-transfer/"]:::phase
+    end
 
-    S6["6 · CT LOGS — ctfr: crt.sh + liveness probe<br/>→ 06-ctfr/ · live list feeds step 7"]:::phase --> S7
-    S7["7 · SUBENUM — multi-source gather + resolve<br/>merges the live CT output<br/>final at recon root: https-subs.txt + alive-domains.txt<br/>staging subdomains/ — removed at step end"]:::phase --> S8
-    S8["8 · DNS BRUTEFORCE — puredns + massdns<br/>→ 08-puredns/"]:::phase --> S9
-    S9["9 · VHOST FUZZ — Host-header discovery<br/>→ 09-vhost/"]:::phase --> S10
-    S10["10 · ZONE TRANSFER — AXFR per NS<br/>→ 10-zone-transfer/"]:::phase --> S11
-    S11["11 · DIRECTORY BRUTEFORCE — manual<br/>pipeline records a skip — ./bruteforce/dir-bruteforce.sh<br/>→ directories/&lt;host&gt;/"]:::manual --> S12
-    S12["12 · ROBOTS / SITEMAP — curl<br/>→ 12-robots-sitemap/"]:::phase --> M13
-    M13["MERGE SOURCES — Steps 4/8/9/12<br/>merge/merge-sources.sh → merge/merged-*.txt<br/>append → alive-domains.txt + https-subs.txt<br/>delete merged files"]:::merge --> S13
-    S13["13 · WEB CRAWL — starts after the merge<br/>waymore · gau · hakrawler · katana · gospider<br/>finals: 7 crawl files<br/>check/ — filter.sh + gf-scripts/gf-extract.sh · gooutput/"]:::phase --> M14
-    M14["MERGE AGAIN — idempotent<br/>regenerate + sort -u append<br/>covers a skipped/failed Step 13"]:::merge --> S14
-    S14["14 · HIGH-VALUE — ffuf secrets · admin · backups<br/>root files + alive-domains.txt (incl. merged hosts)<br/>→ 14-high-value/"]:::phase --> Sum
+    subgraph P3["11–14 · CONTENT + DELIVERY"]
+        direction LR
+        S11["11 · Directory bruteforce<br/>MANUAL — pipeline skip<br/>./bruteforce/dir-bruteforce.sh<br/>→ directories/&lt;host&gt;/"]:::manual --> S12["12 · Robots / sitemap<br/>curl → &lt;loc&gt; + Sitemap:<br/>→ 12-robots-sitemap/"]:::phase
+        S12 --> M13["MERGE 4/8/9/12<br/>writes merged-*.txt<br/>append → root lists<br/>delete merged"]:::merge
+        M13 --> S13["13 · Web crawl<br/>waymore · gau · hakrawler<br/>katana · gospider<br/>filter.sh + gf-extract.sh<br/>7 crawl files · check/ · gooutput/"]:::phase
+        S13 --> M14["MERGE AGAIN<br/>idempotent<br/>covers skipped 13"]:::merge
+        M14 --> S14["14 · High-value<br/>ffuf secrets · admin · backups<br/>root + alive-domains.txt<br/>→ 14-high-value/"]:::phase
+    end
 
-    Sum(["summary table — ok / skip / fail per step<br/>failed steps point at recon.log · exit 0"]):::entry
+    RUN --> S1
+    S5 --> S6
+    S5 -.-> MPORT["OPTIONAL MANUAL — after Step 5<br/>masscan / dnmasscan → nmap -sV<br/>→ brutespray · authorization required"]:::manual
+    S10 --> S11
+    S14 --> DONE["DONE — root finals + summary<br/>https-subs.txt · alive-domains.txt · 7 crawl files<br/>ok / skip / fail per step · failures → recon.log · exit 0"]:::artifact
+
+    style P1 fill:#0b1220,stroke:#334155,stroke-width:1.5px,color:#cbd5e1
+    style P2 fill:#0b1220,stroke:#334155,stroke-width:1.5px,color:#cbd5e1
+    style P3 fill:#0b1220,stroke:#334155,stroke-width:1.5px,color:#cbd5e1
+    linkStyle default stroke:#e2e8f0,stroke-width:1.5px
 ```
 
 **Key properties of this flow:**
@@ -662,7 +680,7 @@ invokes `extracturls.sh`, `filter.sh`, and `gf-scripts/gf-extract.sh` automatica
 | `gf-scripts/gf-extract.sh` | `./gf-scripts/gf-extract.sh [input_file] [out_dir]` | Defaults: `check/param-urls.txt` → `check/gf/`. `$1` must be a **file** (not a directory). Only patterns with hits produce files; patterns whose `_` → `-` sanitized names collide are skipped with a warning. |
 | `merge/merge-sources.sh` | `./merge/merge-sources.sh -d <domain> [-o <outdir>]` | Builds `merge/merged-alive-domains.txt` + `merge/merged-https-subs.txt` from Step 4/8/9/12 outputs. Called automatically at the start of Steps 13 and 14; safe to run standalone. |
 | `gf-scripts/sync-gf-patterns.sh` | `./gf-scripts/sync-gf-patterns.sh` | Copies `gf-patterns/*.json` → `~/.gf` (skips identical, index excluded, prunes **only this repo's** previously-synced files — ownership-aware for shared `~/.gf`). Called by `install.sh`; run standalone after editing patterns. |
-| `bruteforce/dir-bruteforce.sh` | `./bruteforce/dir-bruteforce.sh` (interactive) · `./bruteforce/dir-bruteforce.sh --url <url> --wordlist <path>` | ffuf path discovery — **never auto-run** by the pipeline (step 11 = *skip*). Profiles `--profile light\|standard\|deep` + `--ext-profile`, plus `--plan <scan.json>`, `--dry-run`, `--force`, `--report-only`, `--target <domain>` (merges hosts under `directories/<domain>/`; `--fresh-aggregate` truncates it first). Output: `directories/<host>/` (evidence + reports). |
+| `bruteforce/dir-bruteforce.sh` | `./bruteforce/dir-bruteforce.sh` (interactive) · `./bruteforce/dir-bruteforce.sh --url <url> --wordlist <path>` | ffuf path discovery — **never auto-run** by the pipeline (step 11 = *skip*). Interactive mode shows a numbered wordlist menu (`Enter` = `common.txt`, or number/name/path); `--list-wordlists` prints it without scanning. Profiles `--profile light\|standard\|deep` + `--ext-profile`, plus `--plan <scan.json>`, `--dry-run`, `--force`, `--report-only`, `--target <domain>` (merges hosts under `directories/<domain>/`; `--fresh-aggregate` truncates it first). Output: `directories/<host>/` (evidence + reports). |
 
 ---
 

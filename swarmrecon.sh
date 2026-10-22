@@ -128,6 +128,48 @@ ok()   { _log "[+] $*"; printf '%s[+]%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
 warn() { _log "[-] $*"; printf '%s[-]%s %s\n' "$C_YELLOW" "$C_RESET" "$*"; }
 err()  { _log "[!] $*"; printf '%s[!]%s %s\n' "$C_RED" "$C_RESET" "$*"; }
 
+# ---------- command echo + per-command timing ----------
+# Printed before every external tool (SWARM_CMDS=full disables truncation);
+# the full text always goes to recon.log and .swarmrecon-cmd, which the
+# dashboard reads to show what is running right now.
+_CMD_T0=""
+_CMD_FILE="$OUTDIR/.swarmrecon-cmd"
+CURRENT_STEP=""
+
+fmt_dur() {  # $1 = seconds -> 2h05m / 12m03s / 8s
+    local s="${1:-0}"
+    if [ "$s" -ge 3600 ]; then
+        printf '%dh%02dm' "$((s / 3600))" "$(((s % 3600) / 60))"
+    elif [ "$s" -ge 60 ]; then
+        printf '%dm%02ds' "$((s / 60))" "$((s % 60))"
+    else
+        printf '%ds' "$s"
+    fi
+}
+
+cmd() {  # $* = human-readable command about to run
+    local text="$*" shown="$*"
+    if [ -n "$_CMD_T0" ]; then
+        printf '  %s⏱ %s%s\n' "$C_DIM" "$(fmt_dur $((SECONDS - _CMD_T0)))" "$C_RESET"
+    fi
+    _CMD_T0=$SECONDS
+    if [ "${SWARM_CMDS:-}" != "full" ] && [ "${#shown}" -gt 160 ]; then
+        shown="${shown:0:159}…"
+    fi
+    printf '  %s▶%s %s%s%s\n' "$C_CYAN" "$C_RESET" "$C_DIM" "$shown" "$C_RESET"
+    _log "[*] cmd: $text"
+    printf '%s|%s|%s\n' "${CURRENT_STEP:-?}" "$(date +%s)" "$text" \
+        > "$_CMD_FILE" 2>/dev/null || true
+}
+
+cmd_end() {  # close the timer for the step's last command
+    if [ -n "$_CMD_T0" ]; then
+        printf '  %s⏱ %s%s\n' "$C_DIM" "$(fmt_dur $((SECONDS - _CMD_T0)))" "$C_RESET"
+        _CMD_T0=""
+    fi
+    : > "$_CMD_FILE" 2>/dev/null || true
+}
+
 banner() {
     printf '%s╭%s\n' "$C_CYAN" "$C_RESET"
     printf '%s│%s  %sswarmrecon%s  %s→%s  %s%s%s\n' \
@@ -137,6 +179,7 @@ banner() {
 }
 
 step_banner() {  # $1=step_no  $2=title
+    CURRENT_STEP="$1"
     printf '\n%s━━━ Step %s ▸ %s %s\n' "$C_MAGENTA$C_BOLD" "$1" "$2" "$C_RESET"
 }
 
@@ -302,7 +345,7 @@ step_wappalyzer() {
 
     local sdir="$OUTDIR/01-wappalyzer"
     mkdir -p "$sdir"
-    info "wappalyzer -i https://${DOMAIN}"
+    cmd "wappalyzer -i https://${DOMAIN} -oJ 01-wappalyzer/technologies.json"
     local json_out="$sdir/technologies.json"
     # NOTE: wappalyzer's -oC is silently skipped when -oJ is also given
     # (verified 2026-10-17) -> JSON only; CSV can be derived later if needed.
@@ -350,7 +393,7 @@ step_dns_whois() {
 
     local sdir="$OUTDIR/02-dns-whois"
     mkdir -p "$sdir"
-    info "dig A/AAAA/NS/MX/TXT/CAA/SOA/DMARC + Google/Cloudflare resolvers + nslookup + whois"
+    cmd "dig A/AAAA/NS/MX/TXT/CAA/SOA/DMARC ${DOMAIN} (+Google/Cloudflare) · nslookup · whois"
     local domain="$DOMAIN"
     local t0; t0=$(now_s)
 
@@ -421,7 +464,7 @@ step_nmap() {
 
     local sdir="$OUTDIR/05-nmap"
     mkdir -p "$sdir"
-    info "single pass: top-1000 TCP + version detect, -T4 --min-rate 500 (progress in recon.log)"
+    cmd "nmap -Pn --open -sV -T4 --top-ports 1000 --min-rate 500 ${DOMAIN} -oN 05-nmap/nmap-full.txt"
     local domain="$DOMAIN"
     local t0; t0=$(now_s)
 
@@ -471,7 +514,7 @@ step_ctfr() {
     mkdir -p "$sdir_rel"
     local sdir; sdir="$(cd "$sdir_rel" && pwd)"
 
-    info "activate ${ctfr_dir}/venv + python3 ctfr.py -d ${DOMAIN}"
+    cmd "python3 ctfr.py -d ${DOMAIN} -o 06-ctfr/ctfr-subdomains.txt   (venv: ~/ctfr)"
     local domain="$DOMAIN"
     local t0; t0=$(now_s)
 
@@ -490,6 +533,7 @@ step_ctfr() {
         #   grep -v "No IP" ctfr-subdomains.txt | awk '{print $1}' | httpx -silent -o live-ctfr-subdomains.txt
         local n_live=0
         if command -v httpx >/dev/null 2>&1; then
+            cmd "grep -v 'No IP' ctfr-subdomains.txt | awk '{print \$1}' | httpx -silent -o live-ctfr-subdomains.txt"
             grep -v "No IP" "$sdir/ctfr-subdomains.txt" 2>/dev/null \
                 | awk '{print $1}' \
                 | httpx -silent -o "$sdir/live-ctfr-subdomains.txt" >>"$LOG" 2>&1 || true
@@ -544,7 +588,7 @@ step_puredns() {
     mkdir -p "$sdir_rel"
     local sdir; sdir="$(cd "$sdir_rel" && pwd)"
 
-    info "puredns bruteforce (20k wordlist + resolvers, wildcard filtering)"
+    cmd "puredns bruteforce wordlists/subdomains-top1million-20000.txt ${DOMAIN} -r wordlists/resolvers.txt"
     local domain="$DOMAIN"
     local t0; t0=$(now_s)
 
@@ -615,6 +659,7 @@ step_vhost_ffuf() {
     local ua="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
 
     # --- baseline: what does a NON-existent vhost return? ---
+    cmd "curl -sI http://${domain} -H 'Host: defnotvalid.${domain}'   (baseline Content-Length)"
     curl -s -I -A "$ua" "http://${domain}" -H "Host: defnotvalid.${domain}" \
         > "$sdir/vhost-baseline.txt" 2>>"$LOG" || true
     local base_cl
@@ -631,6 +676,7 @@ step_vhost_ffuf() {
 
     # --- ffuf passes (absolute wordlist + -o json; browser UA avoids WAF 403) ---
     # '&&' so pass A failure aborts instead of reporting pass B alone as ok
+    cmd "ffuf -w common.txt:FUZZ -u http://${domain}/ -H 'Host: FUZZ.${domain}' -fs ${base_cl}   (2 passes: -mc all, then -fc 400,403)"
     if {
         # pass A: all status codes except baseline size/invalid Host
         ffuf -w "${wl}:FUZZ" -u "http://${domain}/" -H "Host: FUZZ.${domain}" \
@@ -678,6 +724,7 @@ step_zone_transfer() {
     local t0; t0=$(now_s)
 
     # --- list nameservers (user's exact command) ---
+    cmd "nslookup -type=NS ${domain}"
     nslookup -type=NS "$domain" > "$sdir/nslookup-NS.txt" 2>>"$LOG" || true
     local nss
     nss=$(grep -i 'nameserver =' "$sdir/nslookup-NS.txt" 2>/dev/null \
@@ -697,6 +744,7 @@ step_zone_transfer() {
     for ns in $nss; do
         total=$((total + 1))
         local out="$sdir/axfr-${ns}.txt"
+        cmd "dig axfr ${ns} ${domain}"
         if dig axfr "$ns" "$domain" > "$out" 2>>"$LOG"; then
             if grep -qiE 'XFR size|ANSWER: [1-9]' "$out"; then
                 xfr_ok=$((xfr_ok + 1))
@@ -742,6 +790,7 @@ step_robots_sitemap() {
     local base="https://${domain}"
     local t0; t0=$(now_s)
 
+    cmd "curl robots.txt + security.txt + sitemap endpoints + sitemap.xml + http->https   (${base})"
     if {
         # 1. robots.txt (HIGH — may reveal unlinked paths)
         curl -sS -L --max-time 15 "$base/robots.txt" > "$sdir/robots.txt"
@@ -839,7 +888,7 @@ step_subenum() {
     # stale data (root finals were already dropped above the skip-guard)
     rm -f "$sdir/https-subs.txt" "$sdir/alive-domains.txt" "$sdir/temp"
 
-    info "subenum.sh -d ${domain} -hp (cwd: ${subenum_dir})"
+    cmd "./subenum.sh -d ${domain} -hp   (cwd: ${subenum_dir})"
     # run in ITS dir (OUTPUT_DIR is CWD-relative: outputs/<domain>/...)
     if (
         cd "$subenum_dir"
@@ -968,6 +1017,7 @@ step_crawl() {
     # --- 1. waymore (user: venv in ~/waymore, run there, then move file) ---
     local wayvenv; wayvenv="$(venv_activate "$HOME/waymore")"
     if [ -f "$wayvenv" ]; then
+        cmd "waymore -i ${DOMAIN} -mode U -oU wayurls.txt   (cwd: ~/waymore)"
         if (
             repair_venv_python "$wayvenv"
             source "$wayvenv"
@@ -996,6 +1046,7 @@ step_crawl() {
 
     # --- 2. gau: echo $D | gau --threads 10 --subs | anew gauurls.txt ---
     if command -v gau >/dev/null 2>&1; then
+        cmd "echo ${DOMAIN} | gau --threads 10 --subs | anew gauurls.txt"
         if command -v anew >/dev/null 2>&1; then
             if echo "$DOMAIN" | gau --threads 10 --subs 2>>"$LOG" | anew "$OUTDIR/gauurls.txt" >>"$LOG" 2>&1; then
                 local ng=0; ng=$(grep -c 'http' "$OUTDIR/gauurls.txt" 2>/dev/null || true)
@@ -1032,6 +1083,7 @@ step_crawl() {
     [ -s "$w_in" ] && merge_inputs+=("$w_in")
     [ -s "$g_in" ] && merge_inputs+=("$g_in")
     if [ "${#merge_inputs[@]}" -gt 0 ]; then
+        cmd "cat wayurls.txt gauurls.txt | uro | sort -u > waygauurls.txt"
         if command -v uro >/dev/null 2>&1; then
             if cat "${merge_inputs[@]}" | uro | sort -u > "$m_out"; then
                 local nm=0; nm=$(grep -c 'http' "$m_out" 2>/dev/null || true)
@@ -1058,6 +1110,7 @@ step_crawl() {
     if [ ! -s "$subs" ]; then
         warn "https-subs.txt missing/empty (step 7) — hakrawler skipped"; skipped=$((skipped + 1))
     elif command -v hakrawler >/dev/null 2>&1; then
+        cmd "cat https-subs.txt | hakrawler -subs -u -d 3 > hakcrawlurls.txt"
         if cat "$subs" | hakrawler -subs -u -d 3 > "$OUTDIR/hakcrawlurls.txt" 2>>"$LOG"; then
             local nh=0; nh=$(grep -c 'http' "$OUTDIR/hakcrawlurls.txt" 2>/dev/null || true)
             ok "hakrawler → hakcrawlurls.txt (${nh:-0} URLs)"; ran=$((ran + 1))
@@ -1079,6 +1132,9 @@ step_crawl() {
         local kt_cap="${KATANA_URL_CAP:-1000000}"
         [[ "$kt_cap" =~ ^[0-9]+$ ]] || kt_cap=1000000
         local kt_rc=0 nk=0
+        local kt_label="cat https-subs.txt | katana -d 3 -jc -timeout 15 -c 20 | anew cleansubskatanaurls.txt"
+        [ "$kt_cap" -gt 0 ] && kt_label="${kt_label}  [cap ${kt_cap}]"
+        cmd "$kt_label"
         if command -v anew >/dev/null 2>&1; then
             if cat "$subs" | katana -d 3 -jc -timeout 15 -c 20 2>>"$LOG" \
                  | anew "$kt_out" 2>>"$LOG" \
@@ -1115,6 +1171,7 @@ step_crawl() {
     if [ ! -s "$subs" ]; then
         warn "https-subs.txt missing/empty (step 7) — gospider skipped"; skipped=$((skipped + 1))
     elif command -v gospider >/dev/null 2>&1; then
+        cmd "gospider -S https-subs.txt -o gooutput -c 10 -d 3 -t 20"
         if gospider -S "$subs" -o "$OUTDIR/gooutput" -c 10 -d 3 -t 20 >>"$LOG" 2>&1; then
             local ngs=0; ngs=$(find "$OUTDIR/gooutput" -type f 2>/dev/null | wc -l | tr -d ' ' || true)
             ok "gospider → gooutput/ (${ngs:-0} files)"; ran=$((ran + 1))
@@ -1140,20 +1197,23 @@ step_crawl() {
     elif ! command -v dnsx >/dev/null 2>&1 || ! command -v httpx >/dev/null 2>&1; then
         warn "dnsx and/or httpx missing (required by extracturls.sh) — skipped"
         skipped=$((skipped + 1))
-    elif bash "$extractor" -f "$OUTDIR/gooutput" -d "$DOMAIN" >>"$LOG" 2>&1; then
-        if [ -s "$OUTDIR/gooutput/alivesubsurls.txt" ]; then
-            if mv -f "$OUTDIR/gooutput/alivesubsurls.txt" "$OUTDIR/alivesubsurls.txt"; then
-                local na=0; na=$(grep -c 'http' "$OUTDIR/alivesubsurls.txt" 2>/dev/null || true)
-                ok "extracturls → alivesubsurls.txt (${na:-0} alive URLs)"
-                ran=$((ran + 1))
+    else
+        cmd "extracturls.sh -f gooutput -d ${DOMAIN}   (dnsx + 2x httpx)"
+        if bash "$extractor" -f "$OUTDIR/gooutput" -d "$DOMAIN" >>"$LOG" 2>&1; then
+            if [ -s "$OUTDIR/gooutput/alivesubsurls.txt" ]; then
+                if mv -f "$OUTDIR/gooutput/alivesubsurls.txt" "$OUTDIR/alivesubsurls.txt"; then
+                    local na=0; na=$(grep -c 'http' "$OUTDIR/alivesubsurls.txt" 2>/dev/null || true)
+                    ok "extracturls → alivesubsurls.txt (${na:-0} alive URLs)"
+                    ran=$((ran + 1))
+                else
+                    err "could not move alivesubsurls.txt to ${OUTDIR}/"
+                fi
             else
-                err "could not move alivesubsurls.txt to ${OUTDIR}/"
+                err "extracturls ran but produced no alivesubsurls.txt — see ${LOG}"
             fi
         else
-            err "extracturls ran but produced no alivesubsurls.txt — see ${LOG}"
+            err "extracturls.sh FAILED (exit=$?) — see ${LOG}"
         fi
-    else
-        err "extracturls.sh FAILED (exit=$?) — see ${LOG}"
     fi
 
     # --- 8. Merge crawled results (user's exact command) ---
@@ -1171,6 +1231,7 @@ step_crawl() {
         warn "crawl merge inputs missing: ${crawl_missing[*]}"
     fi
     if [ "${#crawl_inputs[@]}" -gt 0 ]; then
+        cmd "cat waygauurls.txt cleansubskatanaurls.txt hakcrawlurls.txt alivesubsurls.txt | uro > merged-crawl.txt"
         if command -v uro >/dev/null 2>&1; then
             if cat "${crawl_inputs[@]}" | uro > "$OUTDIR/merged-crawl.txt"; then
                 local nmc=0; nmc=$(grep -c 'http' "$OUTDIR/merged-crawl.txt" 2>/dev/null || true)
@@ -1206,17 +1267,20 @@ step_crawl() {
     elif ! command -v httpx >/dev/null 2>&1; then
         warn "httpx missing (required by filter.sh) — skipped"
         skipped=$((skipped + 1))
-    elif ( cd "$OUTDIR" && echo "$DOMAIN" | bash "$filterer" ) >>"$LOG" 2>&1; then
-        if [ -s "$OUTDIR/check/param-urls.txt" ]; then
-            local npu=0; npu=$(grep -c 'http' "$OUTDIR/check/param-urls.txt" 2>/dev/null || true)
-            ok "filter.sh → check/param-urls.txt (${npu:-0} param URLs)"
-            ran=$((ran + 1))
-        else
-            warn "filter.sh ran but produced 0 live URLs — no param-urls.txt"
-            ran=$((ran + 1))
-        fi
     else
-        err "filter.sh FAILED (exit=$?) — domain mismatch or input problem, see ${LOG}"
+        cmd "echo ${DOMAIN} | filter.sh   (cwd: recon/${DOMAIN}/)"
+        if ( cd "$OUTDIR" && echo "$DOMAIN" | bash "$filterer" ) >>"$LOG" 2>&1; then
+            if [ -s "$OUTDIR/check/param-urls.txt" ]; then
+                local npu=0; npu=$(grep -c 'http' "$OUTDIR/check/param-urls.txt" 2>/dev/null || true)
+                ok "filter.sh → check/param-urls.txt (${npu:-0} param URLs)"
+                ran=$((ran + 1))
+            else
+                warn "filter.sh ran but produced 0 live URLs — no param-urls.txt"
+                ran=$((ran + 1))
+            fi
+        else
+            err "filter.sh FAILED (exit=$?) — domain mismatch or input problem, see ${LOG}"
+        fi
     fi
 
     # --- 10. gf-scripts/gf-extract.sh: gf-pattern classification of param URLs ---
@@ -1236,21 +1300,24 @@ step_crawl() {
     elif [ ! -d "$HOME/.gf" ]; then
         warn "gf patterns missing at ${HOME}/.gf — run ./gf-scripts/sync-gf-patterns.sh (bundled in gf-patterns/) — skipped"
         skipped=$((skipped + 1))
-    elif ( cd "$OUTDIR" && bash "$gfex" check/param-urls.txt check/gf ) >>"$LOG" 2>&1; then
-        local ngf=0 ngf_urls=0
-        ngf=$(find "$OUTDIR/check/gf" -name 'gf-*.txt' 2>/dev/null | wc -l | tr -d ' ')
-        if [ "${ngf:-0}" -gt 0 ]; then
-            # expand the glob only when files are known to exist (0 files ->
-            # unmatched glob + pipefail + set -e would kill the script here)
-            ngf_urls=$(cat "$OUTDIR/check/gf"/gf-*.txt 2>/dev/null | wc -l | tr -d ' ')
-            ok "gf-extract → check/gf/ (${ngf} pattern files, ${ngf_urls} matches)"
-            ran=$((ran + 1))
-        else
-            warn "gf-extract ran but no pattern matched — 0 gf-*.txt files"
-            ran=$((ran + 1))
-        fi
     else
-        err "gf-scripts/gf-extract.sh FAILED (exit=$?) — see ${LOG}"
+        cmd "gf-extract.sh check/param-urls.txt check/gf   (cwd: recon/${DOMAIN}/)"
+        if ( cd "$OUTDIR" && bash "$gfex" check/param-urls.txt check/gf ) >>"$LOG" 2>&1; then
+            local ngf=0 ngf_urls=0
+            ngf=$(find "$OUTDIR/check/gf" -name 'gf-*.txt' 2>/dev/null | wc -l | tr -d ' ')
+            if [ "${ngf:-0}" -gt 0 ]; then
+                # expand the glob only when files are known to exist (0 files ->
+                # unmatched glob + pipefail + set -e would kill the script here)
+                ngf_urls=$(cat "$OUTDIR/check/gf"/gf-*.txt 2>/dev/null | wc -l | tr -d ' ')
+                ok "gf-extract → check/gf/ (${ngf} pattern files, ${ngf_urls} matches)"
+                ran=$((ran + 1))
+            else
+                warn "gf-extract ran but no pattern matched — 0 gf-*.txt files"
+                ran=$((ran + 1))
+            fi
+        else
+            err "gf-scripts/gf-extract.sh FAILED (exit=$?) — see ${LOG}"
+        fi
     fi
 
     # step verdict
@@ -1337,6 +1404,7 @@ step_highvalue() {
     local -a t_files=()
     for t in "${targets[@]}"; do
         t_json="$sdir/high-value-$(printf '%s' "$t" | sed 's|^[a-zA-Z]*://||; s|[^A-Za-z0-9._-]|_|g').json"
+        cmd "ffuf -w high-value-paths.txt -u ${t%/}/FUZZ -mc 200,301,302,401,403,500 -ac -rate 5"
         ffuf \
             -w "$wl" \
             -u "${t%/}/FUZZ" \
@@ -1435,6 +1503,7 @@ step_intel() {
     # still printing a record.
     if command -v whois >/dev/null 2>&1; then
         local whois_out="$sdir/.whois.tmp"
+        cmd "whois ${domain}"
         whois "$domain" >"$whois_out" 2>>"$LOG" || true
         if [ -s "$whois_out" ]; then
             cat "$whois_out" >> "$sdir/domain_info_general.txt"
@@ -1453,6 +1522,7 @@ step_intel() {
     local msft_script="$tools_dir/msftrecon/msftrecon/msftrecon.py"
     if [ -f "$msft_script" ] && [ -n "$act_msft" ]; then
         local msft_out="$sdir/.msftrecon.tmp"
+        cmd "python3 msftrecon.py -d ${domain}   (venv: ~/.local/bin/msftrecon)"
         (
             repair_venv_python "$act_msft"
             source "$act_msft"
@@ -1478,6 +1548,7 @@ step_intel() {
         if command -v unfurl >/dev/null 2>&1; then
             local company
             company="$(unfurl format %r <<< "$domain" 2>/dev/null || printf '%s' "$domain")"
+            cmd "python3 scopify.py -c ${company}   (cwd: 03-intel)"
             (
                 repair_venv_python "$act_scop"
                 source "$act_scop"
@@ -1511,6 +1582,7 @@ step_intel() {
     # --- Spoofy (SPF / DMARC / DKIM analysis) ---
     local spoof_script="$tools_dir/Spoofy/spoofy.py"
     if [ -f "$spoof_script" ] && [ -n "$act_spoof" ]; then
+        cmd "python3 spoofy.py -d ${domain}"
         (
             repair_venv_python "$act_spoof"
             source "$act_spoof"
@@ -1540,6 +1612,7 @@ step_intel() {
             brute="$cloud_script"
         fi
         local ce_tmp="$sdir/.cloud_enum.tmp"
+        cmd "python3 cloud_enum.py -k ${company} -k ${domain} -t 50 -qs"
         (
             repair_venv_python "$act_cloud"
             source "$act_cloud"
@@ -1595,6 +1668,7 @@ _run_harvester() {
     local osint_dir="$1" base="$2" sources="$3" label="$4"
     shift 4
     info "theHarvester (${label}) — sources: ${sources}"
+    cmd "$* -d ${DOMAIN} -b ${sources} -n -r -f ${base}   (cwd: 04-osint)"
     (
         cd "$osint_dir" || exit 1
         "$@" -d "$DOMAIN" -b "$sources" -n -r -f "$base"
@@ -1810,6 +1884,7 @@ run_step() {  # $1=step  $2=banner title  $3=summary label  $4...=step function
     step_banner "$n" "$title"
     local before=${#SUMMARY[@]} st="fail"
     "$@"
+    cmd_end
     if [ ${#SUMMARY[@]} -gt "$before" ]; then
         IFS='|' read -r st _ _ <<< "${SUMMARY[$(( ${#SUMMARY[@]} - 1 ))]}"
     fi

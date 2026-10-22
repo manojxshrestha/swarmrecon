@@ -118,6 +118,30 @@ def read_state(outdir: Path) -> dict[int, dict]:
     return state
 
 
+def read_current_cmd(outdir: Path) -> dict | None:
+    """Last command written by swarmrecon.sh (step|epoch|command), if fresh."""
+    path = outdir / ".swarmrecon-cmd"
+    try:
+        lines = path.read_text(errors="replace").strip().splitlines()
+    except OSError:
+        return None
+    if not lines:
+        return None
+    text = lines[-1]
+    parts = text.split("|", 2)
+    if len(parts) != 3:
+        return None
+    step, epoch, command = parts
+    try:
+        started = int(epoch)
+    except ValueError:
+        return None
+    age = max(0, int(time.time()) - started)
+    if age > 12 * 3600:
+        return None
+    return {"step": step, "command": command, "age": age}
+
+
 def tail_lines(path: Path, lines: int = 80, max_bytes: int = 256 * 1024) -> list[str]:
     try:
         size = path.stat().st_size
@@ -201,6 +225,15 @@ def _proc_table() -> dict[int, dict]:
                     break
         except (OSError, ValueError):
             pass
+        rchar = wchar = 0
+        try:
+            for line in (p / "io").read_text(errors="replace").splitlines():
+                if line.startswith("rchar:"):
+                    rchar = int(line.split()[1])
+                elif line.startswith("wchar:"):
+                    wchar = int(line.split()[1])
+        except (OSError, ValueError):
+            pass
         elapsed = max(0, int(uptime - starttime / hz)) if uptime and starttime else 0
         table[pid] = {
             "pid": pid,
@@ -208,6 +241,8 @@ def _proc_table() -> dict[int, dict]:
             "cmd": cmd,
             "name": os.path.basename(cmd.split()[0]) if cmd else "?",
             "rss_kb": rss_kb,
+            "rchar": rchar,
+            "wchar": wchar,
             "elapsed": elapsed,
         }
     return table
@@ -272,6 +307,7 @@ def collect_processes(table: dict[int, dict], domain: str, outdir: Path) -> list
             "name": name,
             "cmd": p["cmd"][:200],
             "rss": human_bytes(p["rss_kb"] * 1024) if p["rss_kb"] else "—",
+            "io": f"{human_bytes(p['rchar'])} / {human_bytes(p['wchar'])}",
             "elapsed": fmt_elapsed(p["elapsed"]),
             "scanner": is_scanner,
         })
@@ -284,6 +320,7 @@ def build_status(domain: str, outdir: Path) -> dict:
     table = _proc_table()
     processes = collect_processes(table, domain, outdir)
     running = any(p["scanner"] for p in processes)
+    cmd_info = read_current_cmd(outdir) if running else None
 
     current_step: int | None = None
     if running:
@@ -384,6 +421,9 @@ def build_status(domain: str, outdir: Path) -> dict:
         "now": int(time.time()),
         "now_str": time.strftime("%H:%M:%S"),
         "running": running,
+        "command": cmd_info["command"] if cmd_info else None,
+        "command_step": cmd_info["step"] if cmd_info else None,
+        "command_age": cmd_info["age"] if cmd_info else None,
         "badge": badge,
         "badge_class": badge_class,
         "current_step": current_step,
@@ -429,6 +469,11 @@ PAGE = r"""<!doctype html>
   .badge.idle { color:var(--dim); }
   header .spacer { flex:1; }
   header .meta { color:var(--dim); font-size:12px; }
+  #cmdbar { display:none; gap:10px; align-items:baseline; padding:8px 20px;
+            background:#0a0d12; border-bottom:1px solid var(--line); font-size:12.5px; }
+  #cmdbar .arrow { color:var(--cyan); }
+  #cmdbar #cmdtext { overflow-wrap:anywhere; }
+  #cmdbar #cmdage { color:var(--dim); white-space:nowrap; margin-left:auto; }
   main { display:grid; grid-template-columns:minmax(420px,1.1fr) minmax(320px,.9fr);
          gap:14px; padding:14px 20px 0; }
   section { background:var(--panel); border:1px solid var(--line); border-radius:6px; overflow:hidden; }
@@ -467,6 +512,12 @@ PAGE = r"""<!doctype html>
   <span class="meta" id="conn">connecting…</span>
 </header>
 
+<div id="cmdbar">
+  <span class="arrow">▶</span>
+  <span id="cmdtext">—</span>
+  <span id="cmdage"></span>
+</div>
+
 <main>
   <section>
     <h2>Steps</h2>
@@ -479,7 +530,7 @@ PAGE = r"""<!doctype html>
   <section id="procs">
     <h2>Processes</h2>
     <table>
-      <thead><tr><th>PID</th><th>Tool</th><th class="num">RSS</th><th class="num">Elapsed</th></tr></thead>
+      <thead><tr><th>PID</th><th>Tool</th><th class="num">RSS</th><th class="num">I/O r/w</th><th class="num">Elapsed</th></tr></thead>
       <tbody id="procbody"></tbody>
     </table>
     <div class="body"><span class="muted" id="procnote"></span></div>
@@ -551,6 +602,7 @@ function renderProcs(procs) {
     cell(tr, "nothing running", "muted");
     cell(tr, "", "");
     cell(tr, "", "");
+    cell(tr, "", "");
     tb.appendChild(tr);
     $("procnote").textContent = "scan idle";
     return;
@@ -562,6 +614,7 @@ function renderProcs(procs) {
     const td = cell(tr, p.name, "name");
     td.title = p.cmd;
     cell(tr, p.rss || "—", "num");
+    cell(tr, p.io || "—", "num muted");
     cell(tr, p.elapsed || "—", "num muted");
     tb.appendChild(tr);
   }
@@ -622,6 +675,18 @@ async function tick() {
     $("outdir").textContent = d.exists ? "recon/" + d.domain + "/"
                                        : "recon/" + d.domain + "/ (waiting…)";
     $("conn").textContent = "updated " + d.now_str;
+
+    const bar = $("cmdbar");
+    if (d.running) {
+      bar.style.display = "flex";
+      $("cmdtext").textContent = d.command
+        ? "step " + d.command_step + " · " + d.command
+        : "starting — waiting for the first command…";
+      $("cmdage").textContent = d.command_age === null || d.command_age === undefined
+        ? "" : "running " + fmtAge(d.command_age);
+    } else {
+      bar.style.display = "none";
+    }
 
     renderSteps(d.steps);
     renderProcs(d.processes);
@@ -764,6 +829,9 @@ def pick_domain(explicit: str | None) -> tuple[str, str]:
 def once(domain: str, outdir: Path) -> int:
     d = build_status(domain, outdir)
     print(f"domain: {d['domain']}   status: {d['badge']}   step: {d['current_label']}")
+    if d.get("command"):
+        print(f"running: step {d['command_step']} · {d['command']}"
+              f"   ({fmt_elapsed(d['command_age'])} ago)")
     print(f"disk: {d['disk']['free_str']} free ({d['disk']['percent']}% used)   log: {d['log_size']}")
     print("\nsteps:")
     for s in d["steps"]:
@@ -772,7 +840,7 @@ def once(domain: str, outdir: Path) -> int:
     if d["processes"]:
         print("\nprocesses:")
         for p in d["processes"]:
-            print(f"  {p['pid']:>7}  {p['name']:<14} {p['rss']:>9}  {p['elapsed']:>8}")
+            print(f"  {p['pid']:>7}  {p['name']:<14} {p['rss']:>9}  {p['io']:>18}  {p['elapsed']:>8}")
     if d["files"]:
         print("\nartifacts:")
         for f in d["files"]:

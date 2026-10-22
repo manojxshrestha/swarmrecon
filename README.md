@@ -147,6 +147,11 @@ Notes:
 - Every run truncates and rewrites `recon/<domain>/recon.log` (including a
   resume — the new log covers only the steps that actually run).
 - Colours auto-disable when output is piped or when `NO_COLOR` is set.
+- Every tool is echoed before it runs — `▶ katana -d 3 -jc …` — then followed by
+  `⏱ 32m06s` when it finishes, so a long silent step is visible. The full
+  command also goes to `recon.log`; the terminal truncates long ones unless
+  `SWARM_CMDS=full` is set. The current command is written to
+  `recon/<domain>/.swarmrecon-cmd` for the [live dashboard](#live-dashboard).
 - **Manual after Step 5:** port discovery and service brute-forcing are not
   automated — see [Port Discovery & Service Brute-Forcing](#port-discovery--service-brute-forcing-manual).
 - **Manual Step 11:** directory bruteforce is not automated — the pipeline
@@ -215,6 +220,8 @@ It only reads — it tails `recon.log`, parses `.swarmrecon-state`, and inspects
 `/proc`; it never touches the running scan, so you can start and stop it at any
 time (also on a run that is already in progress). The page refreshes every 2 s:
 
+- **the command currently running** (`step N · …`, from `.swarmrecon-cmd`) plus
+  how long it has been running
 - run state (running / stopped / complete) and current step
 - all 14 steps with `ok` / `skip` / `fail` / `pending` and timestamps
 - running tools with PID, RSS and elapsed time (`katana`, `gospider`,

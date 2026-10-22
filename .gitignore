@@ -12,3 +12,4 @@ portscan/05b-ports/
 # OS/editor noise
 .DS_Store
 *.swp
+__pycache__/

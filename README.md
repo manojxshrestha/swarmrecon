@@ -30,7 +30,7 @@
 
 ---
 
-**Quick links:** [What is this?](#what-is-this) · [Quick Install](#quick-install) · [Usage](#usage) · [Resume](#resume--restart-from-a-step) · [Manual](#manual) · [Manual: after Step 5](#port-discovery--service-brute-forcing-manual) · [Manual: Step 11](#directory-bruteforce-manual) · [Pipeline](#pipeline-14-steps) · [Source merge](#source-merge) · [Engagement Flow](#engagement-flow) · [Wordlists & patterns](#wordlists--patterns) · [Design notes](#design-notes)
+**Quick links:** [What is this?](#what-is-this) · [Quick Install](#quick-install) · [Usage](#usage) · [Resume](#resume--restart-from-a-step) · [Live dashboard](#live-dashboard) · [Manual](#manual) · [Manual: after Step 5](#port-discovery--service-brute-forcing-manual) · [Manual: Step 11](#directory-bruteforce-manual) · [Pipeline](#pipeline-14-steps) · [Source merge](#source-merge) · [Engagement Flow](#engagement-flow) · [Wordlists & patterns](#wordlists--patterns) · [Design notes](#design-notes)
 
 ---
 
@@ -65,6 +65,10 @@ structure. `swarmrecon.sh` encodes that whole playbook:
 - **Resumable** — stopped by Ctrl+C or a closed terminal? `--resume` continues at
   the first unfinished step instead of redoing Steps 1–12; `--from <n>` restarts
   at a step you choose. See [Resume](#resume--restart-from-a-step).
+- **Watch it live** — `./dashboard.py` serves a read-only page on
+  `http://127.0.0.1:8787` (it auto-follows the running scan) with step status,
+  running tools, artifact counts, disk space and a log tail.
+  See [Live dashboard](#live-dashboard).
 - **Wordlists ship with the repo** — no separate download step.
 
 ---
@@ -190,6 +194,50 @@ Steps before the start point are left untouched and appear in the summary as
 
 ---
 
+<a id="dashboard"></a>
+## Live dashboard
+
+The terminal is mostly silent while a scan runs. Start the read-only dashboard
+in a second terminal to watch progress in a browser:
+
+```bash
+./dashboard.py                        # → http://127.0.0.1:8787 (follows the running scan)
+./dashboard.py -d target.com          # or point it at a specific domain
+```
+
+Without `-d` it reads the domain from the running `swarmrecon.sh -d …` process
+(only one target runs at a time); if no scan is running it falls back to the
+newest `recon/<domain>/`. Start it before or after the scan — if
+`recon/<domain>/` does not exist yet the page shows `WAITING` and switches over
+automatically once the scan creates it.
+
+It only reads — it tails `recon.log`, parses `.swarmrecon-state`, and inspects
+`/proc`; it never touches the running scan, so you can start and stop it at any
+time (also on a run that is already in progress). The page refreshes every 2 s:
+
+- run state (running / stopped / complete) and current step
+- all 14 steps with `ok` / `skip` / `fail` / `pending` and timestamps
+- running tools with PID, RSS and elapsed time (`katana`, `gospider`,
+  `waymore`, `nmap`, …)
+- artifact sizes, line counts and last-write age (katana URLs, merged crawl,
+  `check/`, `check/gf/`)
+- disk free/used (bar turns red at ≥90%)
+- live tail of `recon.log`, with the time since the last write; a tool that
+  buffers its output until it finishes (e.g. `waymore`) is marked as a
+  **silent step** instead of looking frozen
+
+| Flag | Meaning |
+|------|---------|
+| `-d, --domain <domain>` | domain to watch (default: target of the running `swarmrecon.sh`, else newest `recon/` dir) |
+| `-p, --port <port>` | port (default `8787`) |
+| `--host <addr>` | bind address (default `127.0.0.1`) |
+| `--once` | print one snapshot to the terminal and exit |
+
+Binding to `0.0.0.0` exposes the log (and therefore recon data) to anyone who
+can reach the port — keep the default unless you know you need it.
+
+---
+
 <a id="manual"></a>
 ## Manual
 
@@ -299,7 +347,7 @@ Run it standalone when you want the two lists without starting a crawl:
    without reinstalling anything: `./install.sh --gau-config-only`.
 3. `cat wayurls.txt gauurls.txt | uro | sort -u > waygauurls.txt` (only the inputs that exist; no `uro` → `sort -u` alone) → root `waygauurls.txt`
 4. `cat https-subs.txt | hakrawler -subs -u -d 3 > hakcrawlurls.txt` → root `hakcrawlurls.txt`
-5. `cat https-subs.txt | katana -d 3 -jc -timeout 15 -c 20 -ct 10m | anew cleansubskatanaurls.txt` (no `anew` → plain `> cleansubskatanaurls.txt`) → root `cleansubskatanaurls.txt`. `-ct 10m` caps the crawl at 10 minutes; `anew`'s stdout is discarded so URLs are **not** duplicated into `recon.log`
+5. `cat https-subs.txt | katana -d 3 -jc -timeout 15 -c 20 | anew cleansubskatanaurls.txt` (no `anew` → plain `> cleansubskatanaurls.txt`) → root `cleansubskatanaurls.txt`. The crawl stops as soon as the file reaches **1,000,000 URLs** (`KATANA_URL_CAP=<n>` overrides it; `0` disables the cap) and the pipeline continues with gospider; `anew`'s stdout is discarded so URLs are **not** duplicated into `recon.log`
 6. `gospider -S https-subs.txt -o gooutput/ -c 10 -d 3 -t 20` → `gooutput/`
 7. `extracturls.sh -f gooutput/ -d <domain>` (requires `dnsx` + `httpx`) → writes into `gooutput/`, then `alivesubsurls.txt` is **moved** to root
 8. `cat waygauurls.txt cleansubskatanaurls.txt hakcrawlurls.txt alivesubsurls.txt | uro > merged-crawl.txt` (missing inputs skipped with a warning; no `uro` → `sort -u`) → root **`merged-crawl.txt`**
@@ -632,6 +680,7 @@ invoke them (steps 11 and the post-Step-5 port workflow are manual):
 | `merge/merge-sources.sh` | `./merge/merge-sources.sh -d <domain> [-o <outdir>]` | Builds `merge/merged-alive-domains.txt` + `merge/merged-https-subs.txt` from Step 4/8/9/12 outputs. Called automatically at the start of Steps 13 and 14; safe to run standalone. |
 | `gf-scripts/sync-gf-patterns.sh` | `./gf-scripts/sync-gf-patterns.sh` | Copies `gf-patterns/*.json` → `~/.gf` (skips identical, index excluded, prunes **only this repo's** previously-synced files — ownership-aware for shared `~/.gf`). Called by `install.sh`; run standalone after editing patterns. |
 | `bruteforce/dir-bruteforce.sh` | `./bruteforce/dir-bruteforce.sh` (interactive) · `./bruteforce/dir-bruteforce.sh --url <url> --wordlist <path>` | ffuf path discovery — **never auto-run** by the pipeline (step 11 = *skip*). Interactive mode shows a numbered wordlist menu (`Enter` = `common.txt`, or number/name/path); `--list-wordlists` prints it without scanning. Profiles `--profile light\|standard\|deep` + `--ext-profile`, plus `--plan <scan.json>`, `--dry-run`, `--force`, `--report-only`, `--target <domain>` (merges hosts under `directories/<domain>/`; `--fresh-aggregate` truncates it first). Output: `directories/<host>/` (evidence + reports). |
+| `dashboard.py` | `./dashboard.py` · `./dashboard.py -d <domain>` | Read-only localhost dashboard (`http://127.0.0.1:8787`). No `-d` → follows the running `swarmrecon.sh` target, else newest `recon/` dir. Shows step status, running tools, artifact counts, disk, live log tail (marks buffered/silent steps); safe alongside a scan, `--once` prints a snapshot. |
 | `portscan/install.sh` | `./portscan/install.sh` | Idempotent setup for the manual port workflow: verifies/installs `nmap`, `masscan`, `dnmasscan` (→ repo root), `brutespray` (→ `~/.local/bin`), and `dig`. Safe to re-run. |
 | `portscan/portscan.sh` | `./portscan/portscan.sh` · `./portscan/portscan.sh -d <domain>` · `./portscan/portscan.sh -f <alive-domains.txt>` | Manual post-Step-5 workflow: `dnmasscan --top-ports 1000` → `nmap -Pn -sV` → optional `brutespray`. No-arg mode auto-detects the newest `recon/*/alive-domains.txt` and copies it to `portscan/alive-domains.txt`; sudo prompts for dnMasscan. Two confirmations (scan + credential testing); `--no-brute`, `--yes`, `--dry-run`, `--max-rate`, `--out`. Output: `recon/<domain>/05b-ports/`. See [`portscan/README.md`](portscan/README.md). |
 

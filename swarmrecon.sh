@@ -1074,22 +1074,38 @@ step_crawl() {
         warn "https-subs.txt missing/empty (step 7) — katana skipped"; skipped=$((skipped + 1))
     elif command -v katana >/dev/null 2>&1; then
         local kt_out="$OUTDIR/cleansubskatanaurls.txt"
+        # Stop katana once the result file reaches this many URLs — the crawl
+        # queue otherwise grows faster than it drains. 0 disables the cap.
+        local kt_cap="${KATANA_URL_CAP:-1000000}"
+        [[ "$kt_cap" =~ ^[0-9]+$ ]] || kt_cap=1000000
+        local kt_rc=0 nk=0
         if command -v anew >/dev/null 2>&1; then
-            if cat "$subs" | katana -d 3 -jc -timeout 15 -c 20 -ct 10m 2>>"$LOG" | anew "$kt_out" >/dev/null 2>>"$LOG"; then
-                local nk=0; nk=$(grep -c 'http' "$kt_out" 2>/dev/null || true)
-                ok "katana → cleansubskatanaurls.txt (${nk:-0} URLs)"; ran=$((ran + 1))
+            if cat "$subs" | katana -d 3 -jc -timeout 15 -c 20 2>>"$LOG" \
+                 | anew "$kt_out" 2>>"$LOG" \
+                 | awk -v max="$kt_cap" 'max > 0 && NR > max { exit } { print }' >/dev/null; then
+                kt_rc=0
             else
-                err "katana FAILED (exit=$?) — see ${LOG}"
-                rm -f "$kt_out"   # never merge a partial crawl
+                kt_rc=$?
             fi
         else
             warn "anew not found — katana output written directly"
-            if cat "$subs" | katana -d 3 -jc -timeout 15 -c 20 > "$kt_out" 2>>"$LOG"; then
-                ran=$((ran + 1))
+            if cat "$subs" | katana -d 3 -jc -timeout 15 -c 20 2>>"$LOG" \
+                 | awk -v max="$kt_cap" 'max > 0 && NR > max { exit } { print }' > "$kt_out"; then
+                kt_rc=0
             else
-                err "katana FAILED (exit=$?) — see ${LOG}"
-                rm -f "$kt_out"   # never merge a partial crawl
+                kt_rc=$?
             fi
+        fi
+
+        nk=$(grep -c 'http' "$kt_out" 2>/dev/null || true)
+        if [ "$kt_rc" -eq 0 ]; then
+            ok "katana → cleansubskatanaurls.txt (${nk:-0} URLs)"; ran=$((ran + 1))
+        elif [ "$kt_cap" -gt 0 ] && [ "$(wc -l < "$kt_out" 2>/dev/null || echo 0)" -ge "$kt_cap" ]; then
+            warn "katana URL cap reached (${kt_cap}) — stopped; continuing with the next sub-step"
+            ok "katana → cleansubskatanaurls.txt (${nk:-0} URLs, capped)"; ran=$((ran + 1))
+        else
+            err "katana FAILED (exit=${kt_rc}) — see ${LOG}"
+            rm -f "$kt_out"   # never merge a partial crawl
         fi
     else
         warn "katana not found — skipped"; skipped=$((skipped + 1))

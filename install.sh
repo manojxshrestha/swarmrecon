@@ -92,7 +92,7 @@ else
 fi
 
 # ================================================================
-#  ctfr — Certificate Transparency logs (Step 4)
+#  ctfr — Certificate Transparency logs (Step 6)
 #  Lives in $HOME/ctfr with its own venv (system pip is PEP-668 managed,
 #  so plain `pip3 install -r requirements.txt` fails → venv required).
 # ================================================================
@@ -222,7 +222,7 @@ else
 fi
 
 # ================================================================
-#  unfurl — company-name extraction for Scopify / cloud_enum / whois (step 3)
+#  unfurl — company-name extraction for Scopify / cloud_enum (step 3)
 # ================================================================
 echo "[*] unfurl"
 if command -v unfurl >/dev/null 2>&1 || [ -x "$HOME/go/bin/unfurl" ]; then

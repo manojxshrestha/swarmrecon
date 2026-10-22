@@ -43,11 +43,13 @@ structure. `swarmrecon.sh` encodes that whole playbook:
 - **One command** runs the full chain end to end.
 - **Fail-soft by design** — a missing tool or failed step produces a warning and a
   `skip`/`fail` row in the final summary; the script exits `0` with a summary table
-  (`✓` ok / `−` skipped / `✗` failed) instead of dying halfway. Every step's raw
-  stdout/stderr appends to `recon/<domain>/recon.log`.
-- **Deterministic layout** — same folders, same filenames, every run. Steps delete
-  their previous run's results first, so a failed rerun can never show stale data
-  as fresh.
+  (`✓` ok / `−` skipped / `✗` failed) instead of dying halfway. Most tool output
+  is appended to `recon/<domain>/recon.log`; some tools write directly to their
+  step files (see the per-step notes below).
+- **Deterministic layout** — same folders, same filenames, every run. Steps that
+  feed later stages clear their previous results before use, so a failed rerun
+  cannot feed stale data downstream; a skipped step may still leave old raw
+  evidence in its own folder.
 - **Wordlists ship with the repo** — no separate download step.
 
 ---
@@ -58,8 +60,9 @@ structure. `swarmrecon.sh` encodes that whole playbook:
 # 1. Clone & enter
 git clone https://github.com/manojxshrestha/swarmrecon.git && cd swarmrecon
 
-# 2. Install deps (wappalyzer + chromium, ctfr, puredns + massdns, subenum, GF patterns;
-#    plus intel/OSINT tools via uv — msftrecon · Scopify · Spoofy · cloud_enum · theHarvester)
+# 2. Install deps (wappalyzer + chromium, ctfr, unfurl, puredns + massdns,
+#    subenum, GF patterns; plus intel/OSINT tools via uv — msftrecon ·
+#    Scopify · Spoofy · cloud_enum · theHarvester)
 ./install.sh
 ```
 
@@ -92,7 +95,7 @@ the run continues):
 | ProjectDiscovery | `httpx`, `dnsx` |
 | URL discovery | `gau`, `anew`, `uro`, `hakrawler`, `katana`, `gospider` |
 | Classification | `gf` — patterns **bundled** in `gf-patterns/` (125 patterns, synced to `~/.gf` by `./install.sh`) |
-| Crawling | `waymore` (venv at `~/waymore/venv`) |
+| Crawling | `waymore` — manual venv: `python3 -m venv ~/waymore/venv && ~/waymore/venv/bin/pip install waymore` (step 13 activates `~/waymore/venv`) |
 | Intel / OSINT (steps 3-4) | `theHarvester`, `msftrecon`, `Scopify`, `Spoofy`, `cloud_enum` — set up by `./install.sh` via `uv` |
 
 ---
@@ -136,7 +139,7 @@ Notes:
 | 10 | Zone transfer (AXFR) | `nslookup`, `dig axfr` per NS | `10-zone-transfer/` — `nslookup-NS.txt`, `axfr-<ns>.txt` |
 | 11 | Directory bruteforce | *manual* | not automated — run `./dir-bruteforce.sh` (interactive prompts: target URL → wordlist path) → `directories/<host>/` |
 | 12 | Public files | `curl` | `12-robots-sitemap/` — `robots.txt`, `security.txt`, 7 sitemap path variants |
-| 13 | Web crawling (10 sub-steps) | `waymore`, `gau`, `uro`, `hakrawler`, `katana`, `gospider`, `httpx`, `filter.sh`, `gf` | root crawl files + `gooutput/` + `check/` (+ `check/gf/`) |
+| 13 | Web crawling (10 sub-steps) | `waymore`, `gau`, `uro`, `anew`, `hakrawler`, `katana`, `gospider`, `dnsx`, `httpx`, `extracturls.sh`, `filter.sh`, `gf` | root crawl files + `gooutput/` + `check/` (+ `check/gf/`) |
 | 14 | High-value paths | `ffuf` (auto-calibrated) — sources: `https://<domain>` + each host in `alive-domains.txt` | `14-high-value/` — `high-value-results.json` (merged), `high-value-results.txt`, `high-value-<host>.json` |
 
 > **After step 5:** an optional manual extension — masscan → nmap `-sV` →
@@ -524,7 +527,7 @@ flowchart TD
     S9["9 · VHOST FUZZ — Host-header discovery<br/>→ 09-vhost/"]:::phase --> S10
     S10["10 · ZONE TRANSFER — AXFR per NS<br/>→ 10-zone-transfer/"]:::phase --> S11
     S11["11 · DIRECTORY BRUTEFORCE — manual<br/>pipeline records a skip — ./dir-bruteforce.sh<br/>→ directories/&lt;host&gt;/"]:::manual --> S12
-    S12["12 · ROBOTS / SITEMAP — waymore · curl<br/>→ 12-robots-sitemap/"]:::phase --> S13
+    S12["12 · ROBOTS / SITEMAP — curl<br/>→ 12-robots-sitemap/"]:::phase --> S13
     S13["13 · WEB CRAWL — waymore · gau · hakrawler<br/>katana · gospider · finals: 7 crawl files<br/>check/ — filter.sh + gf-extract.sh · gooutput/"]:::phase --> S14
     S14["14 · HIGH-VALUE — ffuf secrets · admin · backups<br/>root files + alive-domains.txt<br/>→ 14-high-value/"]:::phase --> Sum
 
@@ -566,7 +569,7 @@ when you invoke it (step 11 is manual):
 | `resolvers.txt` | step 8 — puredns resolvers |
 | `common.txt` | step 9 — vhost fuzzing |
 | `raft-medium-directories.txt` · `raft-medium-files.txt` · `big.txt` … (any file you choose) | step 11 (manual) — `./dir-bruteforce.sh` takes a bare name (resolved under `wordlists/`) at the `Wordlist path:` prompt or via `--wordlist <path>`; no built-in default |
-| `high-value-paths.txt` | step 14 — secrets/disclosure/juicy files (`#`-marked sections), fuzzed against root + `alive-domains.txt` hosts |
+| `high-value-paths.txt` | step 14 — secrets/disclosure/juicy files (`#`-marked sections are stripped at runtime), fuzzed against root + `alive-domains.txt` hosts |
 
 ### `gf-patterns/` (127 files)
 

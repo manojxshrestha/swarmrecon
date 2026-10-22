@@ -425,9 +425,9 @@ step_vhost_ffuf() {
             miss=1
         fi
     done
-    local wl="$WL_DIR/common.txt"
-    if [ ! -s "$wl" ]; then
-        warn "Step 9 SKIPPED: ${wl} missing (ships with repo — check wordlists/)"
+    local wl_raw="$WL_DIR/common.txt"
+    if [ ! -s "$wl_raw" ]; then
+        warn "Step 9 SKIPPED: ${wl_raw} missing (ships with repo — check wordlists/)"
         miss=1
     fi
     if [ "$miss" -ne 0 ]; then
@@ -441,8 +441,29 @@ step_vhost_ffuf() {
     local domain="$DOMAIN"
     local t0; t0=$(now_s)
 
+    # fresh run: a failed/skipped pass must not be papered over by last run's json
+    rm -f "$sdir/vhost-mc-all.json" "$sdir/vhost-no403.json"
+
+    # common.txt is a path wordlist. Used directly as a Host label, entries
+    # containing '/' make an invalid header (HTTP 400) and dotted filenames
+    # such as '.env' are not legal DNS labels. Keep only single labels.
+    local wl="$sdir/vhost-wordlist.txt"
+    awk 'length($0) <= 63 && $0 ~ /^[A-Za-z0-9][A-Za-z0-9-]*$/ {print}' "$wl_raw" \
+        | sort -u > "$wl"
+    if [ ! -s "$wl" ]; then
+        err "no legal vhost labels in ${wl_raw}"
+        note_result "fail" "9 · Vhost fuzzing" "no legal host labels in common.txt"
+        return 0
+    fi
+    info "vhost wordlist: $(wc -l < "$wl" | tr -d ' ') labels (filtered from common.txt)"
+
+    # ffuf's default User-Agent is blocked by Cloudflare (HTTP 403 with a
+    # different body length for every request). Use a browser UA so the
+    # baseline (-fs) actually identifies the wildcard/default vhost response.
+    local ua="Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0 Safari/537.36"
+
     # --- baseline: what does a NON-existent vhost return? ---
-    curl -s -I "http://${domain}" -H "Host: defnotvalid.${domain}" \
+    curl -s -I -A "$ua" "http://${domain}" -H "Host: defnotvalid.${domain}" \
         > "$sdir/vhost-baseline.txt" 2>>"$LOG" || true
     local base_cl
     base_cl=$(grep -i '^Content-Length:' "$sdir/vhost-baseline.txt" 2>/dev/null \
@@ -456,17 +477,16 @@ step_vhost_ffuf() {
     fi
     info "baseline CL=${base_cl} (defnotvalid.${domain})"
 
-    # fresh run: a failed pass must not be papered over by last run's json
-    rm -f "$sdir/vhost-mc-all.json" "$sdir/vhost-no403.json"
-
-    # --- ffuf passes (user's exact commands + absolute wordlist + -o json) ---
+    # --- ffuf passes (absolute wordlist + -o json; browser UA avoids WAF 403) ---
     # '&&' so pass A failure aborts instead of reporting pass B alone as ok
     if {
-        # pass A: all status codes except baseline size
+        # pass A: all status codes except baseline size/invalid Host
         ffuf -w "${wl}:FUZZ" -u "http://${domain}/" -H "Host: FUZZ.${domain}" \
-            -fs "$base_cl" -mc all -of json -o "$sdir/vhost-mc-all.json" \
+            -H "User-Agent: ${ua}" -fs "$base_cl" -fc 400 -mc all \
+            -of json -o "$sdir/vhost-mc-all.json" \
         && ffuf -w "${wl}:FUZZ" -u "http://${domain}/" -H "Host: FUZZ.${domain}" \
-            -fs "$base_cl" -fc 403 -of json -o "$sdir/vhost-no403.json"
+            -H "User-Agent: ${ua}" -fs "$base_cl" -fc 400,403 \
+            -of json -o "$sdir/vhost-no403.json"
     } >>"$LOG" 2>&1; then
         local n1=0 n2=0
         n1=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1])).get("results",[])))' "$sdir/vhost-mc-all.json" 2>/dev/null || echo "?")
@@ -1075,7 +1095,8 @@ step_highvalue() {
     local sdir_rel="$OUTDIR/14-high-value"
     mkdir -p "$sdir_rel"
     local sdir; sdir="$(cd "$sdir_rel" && pwd)"
-    local wl="$WL_DIR/high-value-paths.txt"
+    local wl_raw="$WL_DIR/high-value-paths.txt"
+    local wl="$sdir/high-value-paths.clean.txt"
     local targets=("https://${DOMAIN}")
 
     # fresh run: drop previous results so a skipped/failed rerun can't show stale hits
@@ -1086,14 +1107,29 @@ step_highvalue() {
         warn "Step 14 SKIPPED: ffuf not found (run ./install.sh)"
         miss=1
     fi
-    if [ ! -s "$wl" ]; then
-        warn "Step 14 SKIPPED: ${wl} missing (ships with repo — check wordlists/)"
+    if [ ! -s "$wl_raw" ]; then
+        warn "Step 14 SKIPPED: ${wl_raw} missing (ships with repo — check wordlists/)"
         miss=1
     fi
     if [ "$miss" -ne 0 ]; then
         note_result "skip" "14 · High-value" "ffuf/wordlist missing"
         return 0
     fi
+
+    # high-value-paths.txt is written with leading '/' and section comments.
+    # ffuf appends FUZZ to the URL, so '/' would create '//.env'; strip the
+    # slash, drop comments/blank lines, and deduplicate before fuzzing.
+    awk '
+        { sub(/\r$/, ""); sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, "") }
+        $0 == "" || /^#/ { next }
+        { sub(/^\/+/, ""); if ($0 != "") print }
+    ' "$wl_raw" | sort -u > "$wl"
+    if [ ! -s "$wl" ]; then
+        warn "Step 14 SKIPPED: ${wl_raw} has no usable paths"
+        note_result "skip" "14 · High-value" "wordlist has no usable paths"
+        return 0
+    fi
+    info "high-value wordlist: $(wc -l < "$wl" | tr -d ' ') paths (sanitized)"
 
     # sources: apex (above) + every host in step-7's alive-domains.txt
     local adoms="$OUTDIR/alive-domains.txt"
@@ -1259,12 +1295,22 @@ step_intel() {
             (
                 repair_venv_python "$act_scop"
                 source "$act_scop"
+                # Scopify writes debug_<company>.html relative to CWD; keep it
+                # inside the step dir instead of polluting the repo root.
+                cd "$sdir" || exit 1
                 python3 "$scop_script" -c "$company"
             ) >"$sdir/scopify.txt" 2>&1 || true
-            if [ -s "$sdir/scopify.txt" ]; then
+            # Scopify exits 0 even when Netify has no page for the company;
+            # don't count its error text as a successful module.
+            if [ -s "$sdir/scopify.txt" ] \
+                && ! grep -qiE '^[[:space:]]*Error:|Could not find page' "$sdir/scopify.txt"; then
                 ran=$((ran + 1))
             else
-                warn "Scopify produced no output"
+                if grep -qiE '^[[:space:]]*Error:|Could not find page' "$sdir/scopify.txt"; then
+                    warn "Scopify failed: $(grep -m1 -iE 'Error:|Could not find page' "$sdir/scopify.txt")"
+                else
+                    warn "Scopify produced no output"
+                fi
                 skipped=$((skipped + 1))
             fi
         else
@@ -1473,6 +1519,14 @@ step_osint() {
 # ================================================================
 banner
 info "output → ${OUTDIR}/"
+
+# ProjectDiscovery httpx and python3-httpx share the same binary name. The
+# Python CLI rejects -threads/-silent, so steps 6/7/13 would silently produce
+# 0 live hosts. Warn once, up front, instead of debugging it downstream.
+hx_help="$(httpx -h 2>&1 || true)"
+if [[ "$hx_help" != *"-threads"* ]]; then
+    warn "httpx on PATH is not ProjectDiscovery httpx (python3-httpx collision) — steps 6/7/13 need the PD binary first in PATH"
+fi
 
 step_banner 1 "Technology discovery (Wappalyzer)"
 step_wappalyzer

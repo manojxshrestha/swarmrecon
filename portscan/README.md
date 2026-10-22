@@ -196,6 +196,18 @@ This is the credential-testing stage. It only runs after the second prompt, or
 with `--yes` on an explicitly authorized run. Use `--no-brute` to keep the run
 strictly at port/service inventory.
 
+The script first checks the gnmap for brutespray's supported services or their
+usual ports (`ssh`, `ftp`, `telnet`, `mysql`, `ms-sql-s`, `postgres`, `vnc`,
+`imap(s)`, `pop3(s)`, `smtp`, `svn`, `snmp`, `rsh/rlogin/rexec`, SMB, …). If
+only web ports (HTTP/HTTPS) or `tcpwrapped` are open, it prints:
+
+```text
+[!] No brutespray-supported services (open: http,ssl|https,tcpwrapped) — skipping credential testing.
+```
+
+and goes straight to the final evidence list — no pointless confirmation
+prompt and no empty `scan-results/` fanfare.
+
 ## 5. Output
 
 ```text

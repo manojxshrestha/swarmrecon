@@ -208,6 +208,17 @@ resolve_exec() {
   fi
 }
 
+# Decide whether credential testing is worth starting. Matches brutespray's
+# own gnmap service list (v1.8.x) plus the usual ports for services newer
+# builds support (e.g. RDP/MongoDB), so we don't prompt when the only open
+# ports are HTTP(S)/tcpwrapped.
+has_brutable_service() {  # $1 = nmap grepable output
+  local svc_re='ssh|ftp|postgres|telnet|mysql|ms-sql-s|shell|vnc|imap|imaps|nntp|pcanywheredata|pop3|pop3s|exec|login|microsoft-ds|smtp|smtps|submission|svn|iss-realsecure|snmptrap|snmp'
+  local port_re='21|22|23|25|110|119|139|143|445|512|513|514|587|993|995|1433|3306|3389|5432|5631|5900|3690'
+  grep -Eq "/open/tcp//(${svc_re})/" "$1" \
+    || grep -Eq "(^|[[:space:],])(${port_re})/open/(tcp|udp)/" "$1"
+}
+
 DNMASSSCAN_BIN=""
 if [ -n "$DNMASSSCAN_ARG" ]; then
   DNMASSSCAN_BIN="$(resolve_exec "$DNMASSSCAN_ARG" || true)"
@@ -342,6 +353,10 @@ fi
 if $RUN_BRUTE; then
   if ! $DRY_RUN && ! grep -q '/open/' "$NMAP_FILE"; then
     log_warn "No open services in $NMAP_FILE — skipping brutespray."
+    RUN_BRUTE=false
+  elif ! $DRY_RUN && ! has_brutable_service "$NMAP_FILE"; then
+    OPEN_SVCS="$(grep -oP '(?<=/open/tcp//)[^/]*' "$NMAP_FILE" | sed '/^$/d' | sort -u | paste -sd, -)"
+    log_warn "No brutespray-supported services (open: ${OPEN_SVCS:-unknown}) — skipping credential testing."
     RUN_BRUTE=false
   fi
 fi

@@ -148,7 +148,7 @@ These are the only two parts of the playbook that are **not** run by
 
 | When | Manual workflow | Command / chain | Output | Guide |
 |---|---|---|---|---|
-| **After Step 5** | **Port Discovery & Service Brute-Forcing** | `masscan` / `dnmasscan` → `nmap -sV` → `brutespray` | service inventory + credential results | **[Open guide ↓](#port-discovery--service-brute-forcing-manual)** |
+| **After Step 5** | **Port Discovery & Service Brute-Forcing** | `./portscan/portscan.sh` (auto-detect) · `./portscan/portscan.sh -d <domain>` (`dnmasscan` → `nmap -sV` → `brutespray`) | `recon/<domain>/05b-ports/` + `portscan/alive-domains.txt` | **[Open guide ↓](#port-discovery--service-brute-forcing-manual)** |
 | **Step 11** | **Directory Bruteforce** | `./bruteforce/dir-bruteforce.sh` | `directories/<host>/` | **[Open guide ↓](#directory-bruteforce-manual)** |
 
 ---
@@ -178,8 +178,8 @@ These are the only two parts of the playbook that are **not** run by
 > **Manual branches — the pipeline never runs these:**
 >
 > - **After Step 5 — [Port Discovery & Service Brute-Forcing](#port-discovery--service-brute-forcing-manual):**
->   `masscan` / `dnmasscan` → `nmap -sV` → `brutespray`. This is an explicit
->   credential-guessing decision.
+>   `./portscan/portscan.sh -d <domain>` → `dnmasscan` → `nmap -sV` →
+>   `brutespray`. This is an explicit credential-guessing decision.
 > - **Step 11 — [Directory Bruteforce](#directory-bruteforce-manual):**
 >   `./bruteforce/dir-bruteforce.sh`. `swarmrecon.sh` only records a *skip* row and prints
 >   the pointer.
@@ -258,150 +258,38 @@ Run it standalone when you want the two lists without starting a crawl:
 
 > [!IMPORTANT]
 > **Not run by `swarmrecon.sh`.** This is an optional manual extension after
-> Step 5. Only use it with explicit authorization for credential guessing.
+> Step 5. Run it yourself against an authorized target.
 
-Optional workflow that extends **step 5** — it covers the complete pipeline from
-fast port discovery to service-aware credential guessing using
-**masscan / dnmasscan → nmap → brutespray**:
-
-```mermaid
-flowchart LR
-    classDef entry fill:#1e1b4b,stroke:#818cf8,stroke-width:2px,color:#e0e7ff
-    classDef phase fill:#0f172a,stroke:#38bdf8,stroke-width:1.5px,color:#e2e8f0
-    classDef decision fill:#451a03,stroke:#f59e0b,stroke-width:2px,color:#fde68a
-    classDef manual fill:#042f2e,stroke:#2dd4bf,stroke-width:1.5px,color:#ccfbf1
-    classDef artifact fill:#052e16,stroke:#4ade80,stroke-width:1.5px,color:#dcfce7
-    classDef halt fill:#450a0a,stroke:#f87171,stroke-width:1.5px,color:#fecaca
-
-    IP["raw IP list<br/>$ipFile"]:::entry
-    DOM["alive-domains.txt<br/>step 7 final"]:::entry
-
-    IP -->|"masscan<br/>-p1-65535 · --max-rate · -oG"| MS["masscan.log<br/>grepable IP:port/open"]:::artifact
-    DOM -->|"dnmasscan<br/>resolve, then --top-ports -oG"| DN["dns.log + masscan.log<br/>domains → IPs → ports"]:::artifact
-
-    MS --> XIP["unique IPs —<br/>Host: lines, deduped"]:::phase
-    DN --> XIP
-    MS --> XPT["unique open ports —<br/>/open matches, deduped"]:::phase
-    DN --> XPT
-
-    XIP --> NM["nmap -sV<br/>-iL ips -p ports -oG"]:::phase
-    XPT --> NM
-    NM --> GN["nmap-scan.gnmap<br/>22/open/tcp//ssh/OpenSSH 8.2p1/<br/>service names resolved"]:::artifact
-
-    GN --> AUTH{"credential testing<br/>authorized?"}:::decision
-    AUTH -->|"yes — deliberate decision"| BS["brutespray -f (medusa)<br/>SSH · FTP · MySQL · RDP ..."]:::manual
-    AUTH -->|"no"| HOLD["stop at inventory —<br/>ports + services only"]:::halt
-    BS --> RES["scan-results/<br/>SecLists default-credentials<br/>+ custom wordlists"]:::artifact
-
-    NOTE["not automated in swarmrecon.sh —<br/>sudo + explicit authorization"]:::halt
-    GN -.-> NOTE
-```
-
-> **Not automated in `swarmrecon.sh`** — launching credential guessing must
-> always be a deliberate, authorized decision. Follow the steps below.
-
-### 1. Port Analysis with Masscan
+Run it with no arguments to auto-detect the newest
+`recon/<domain>/alive-domains.txt` and copy it to
+`portscan/alive-domains.txt`:
 
 ```bash
-masscan -p1-65535 -iL $ipFile --max-rate 1800 -oG $outPutFile.log
+./portscan/portscan.sh
 ```
 
-| Option | Purpose |
-|--------|---------|
-| `-p1-65535` | Scan all TCP ports |
-| `-iL $ipFile` | Read target IPs from a file |
-| `--max-rate` | Packets per second (adjust to your network) |
-| `-oG` | Output in grepable format (compatible with Nmap) |
-
-### 2. Port Analysis with DNMasscan
-
-dnmasscan resolves domain names to IP addresses before scanning, then runs
-Masscan. This is useful when you have a list of domains instead of raw IPs.
-
-**Install Masscan (if not already)**
+Or name the target explicitly:
 
 ```bash
-sudo apt-get --assume-yes install git make gcc
-git clone https://github.com/robertdavidgraham/masscan
-cd masscan
-sudo make install
+./portscan/portscan.sh -d example.com
 ```
 
-**Download DNMasscan script**
+The wrapper runs `dnmasscan --top-ports 1000` → `nmap -sV` → optional
+`brutespray`. It prompts for your sudo password before dnMasscan and asks again
+before credential testing. Output goes to `recon/<domain>/05b-ports/`.
+
+Common variants:
 
 ```bash
-wget https://raw.githubusercontent.com/rastating/dnmasscan/refs/heads/master/dnmasscan
-chmod +x dnmasscan
+./portscan/portscan.sh -d example.com --dry-run      # print commands only
+./portscan/portscan.sh -d example.com --no-brute     # inventory only
+./portscan/portscan.sh -d example.com --yes          # authorized, no prompts
 ```
 
-**Run DNMasscan**
+See **[portscan/README.md](portscan/README.md)** for the full guide: install,
+flags, exact commands, output tree, and safety gates.
 
-```bash
-sudo ./dnmasscan alive-domains.txt dns.log --top-ports 1000 -oG masscan.log
-```
-
-(`dns.log` = resolution output, `masscan.log` = grepable port results.)
-
-### 3. Service Scanning (Bridge to BruteSpray)
-
-Masscan only reports open ports. It does not identify the running service
-(e.g. SSH vs. a custom service on port 2222). BruteSpray requires **service
-names** to choose the correct brute-forcing module.
-
-Therefore you must feed the discovered open ports to Nmap with service version
-detection (`-sV`). Extract IPs and ports from Masscan output, then run targeted
-Nmap:
-
-```bash
-nmap -sV -iL <(grep -oP 'Host: \K[0-9.]+' masscan.log | sort -u) -p$(grep -oP '\d+(?=/open)' masscan.log | sort -u | paste -sd,) -oG nmap-scan.gnmap
-```
-
-**Breakdown:**
-
-| Part | What it does |
-|------|--------------|
-| `grep -oP 'Host: \K[0-9.]+' masscan.log \| sort -u` | Extract unique IP addresses from masscan.log |
-| `grep -oP '\d+(?=/open)' masscan.log \| sort -u \| paste -sd,` | Extract unique open port numbers and join with commas |
-| `nmap -sV -iL <(...) -p<ports> -oG nmap-scan.gnmap` | Run Nmap service scan only on those IPs and ports, output in grepable format |
-
-Now `nmap-scan.gnmap` contains lines like:
-
-```
-Host: 192.168.1.10 Ports: 22/open/tcp//ssh/OpenSSH 8.2p1/, 3306/open/tcp//mysql/MySQL 5.7/
-```
-
-BruteSpray can parse this reliably.
-
-### 4. Default Password Scanning with BruteSpray
-
-**Login Pages**
-
-There are three things you need to have if you want to launch a brute force
-attack. The three things you need are an **endpoint with a login page, a
-username, and a password.**
-
-First, you need to find the endpoint you want to target — here BruteSpray finds
-the login services from the Nmap output:
-
-**Default Credentials:** https://github.com/danielmiessler/SecLists/tree/master/Passwords/Default-Credentials
-
-BruteSpray reads the Nmap grepable file and launches Medusa against each
-discovered login service (SSH, FTP, MySQL, RDP, etc.) using default or custom
-wordlists.
-
-```bash
-# install
-go install github.com/x90skysn3k/brutespray/v2@latest
-
-brutespray -f nmap-scan.gnmap
-
-# Use the -o flag to set a custom path
-brutespray -f nmap-scan.gnmap -o scan-results
-```
-
-⚠️ Only against systems you own or have **explicit authorization** to test.
-
----
+> This workflow uses `dnmasscan --top-ports 1000` against the merged host list.
 
 <a id="directory-bruteforce-manual"></a>
 ## Directory Bruteforce — MANUAL (Step 11)
@@ -643,7 +531,7 @@ flowchart TD
 
     RUN --> S1
     S5 --> S6
-    S5 -.-> MPORT["OPTIONAL MANUAL — after Step 5<br/>masscan / dnmasscan → nmap -sV<br/>→ brutespray · authorization required"]:::manual
+    S5 -.-> MPORT["OPTIONAL MANUAL — after Step 5<br/>./portscan/portscan.sh -d &lt;domain&gt;<br/>dnmasscan → nmap -sV → brutespray<br/>authorization required"]:::manual
     S10 --> S11
     S14 --> DONE["DONE — root finals + summary<br/>https-subs.txt · alive-domains.txt · 7 crawl files<br/>ok / skip / fail per step · failures → recon.log · exit 0"]:::artifact
 
@@ -670,8 +558,9 @@ flowchart TD
 
 Standalone helper scripts: Steps 13/14 invoke `merge/merge-sources.sh`, Step 13
 invokes `extracturls.sh`, `filter.sh`, and `gf-scripts/gf-extract.sh` automatically,
-`install.sh` runs `gf-scripts/sync-gf-patterns.sh`, and
-`bruteforce/dir-bruteforce.sh` runs only when you invoke it (step 11 is manual):
+`install.sh` runs `gf-scripts/sync-gf-patterns.sh`, while
+`bruteforce/dir-bruteforce.sh` and `portscan/portscan.sh` run only when you
+invoke them (steps 11 and the post-Step-5 port workflow are manual):
 
 | Script | Usage | Notes |
 |--------|-------|-------|
@@ -681,6 +570,7 @@ invokes `extracturls.sh`, `filter.sh`, and `gf-scripts/gf-extract.sh` automatica
 | `merge/merge-sources.sh` | `./merge/merge-sources.sh -d <domain> [-o <outdir>]` | Builds `merge/merged-alive-domains.txt` + `merge/merged-https-subs.txt` from Step 4/8/9/12 outputs. Called automatically at the start of Steps 13 and 14; safe to run standalone. |
 | `gf-scripts/sync-gf-patterns.sh` | `./gf-scripts/sync-gf-patterns.sh` | Copies `gf-patterns/*.json` → `~/.gf` (skips identical, index excluded, prunes **only this repo's** previously-synced files — ownership-aware for shared `~/.gf`). Called by `install.sh`; run standalone after editing patterns. |
 | `bruteforce/dir-bruteforce.sh` | `./bruteforce/dir-bruteforce.sh` (interactive) · `./bruteforce/dir-bruteforce.sh --url <url> --wordlist <path>` | ffuf path discovery — **never auto-run** by the pipeline (step 11 = *skip*). Interactive mode shows a numbered wordlist menu (`Enter` = `common.txt`, or number/name/path); `--list-wordlists` prints it without scanning. Profiles `--profile light\|standard\|deep` + `--ext-profile`, plus `--plan <scan.json>`, `--dry-run`, `--force`, `--report-only`, `--target <domain>` (merges hosts under `directories/<domain>/`; `--fresh-aggregate` truncates it first). Output: `directories/<host>/` (evidence + reports). |
+| `portscan/portscan.sh` | `./portscan/portscan.sh` · `./portscan/portscan.sh -d <domain>` · `./portscan/portscan.sh -f <alive-domains.txt>` | Manual post-Step-5 workflow: `dnmasscan --top-ports 1000` → `nmap -sV` → optional `brutespray`. No-arg mode auto-detects the newest `recon/*/alive-domains.txt` and copies it to `portscan/alive-domains.txt`; sudo prompts for dnMasscan. Two confirmations (scan + credential testing); `--no-brute`, `--yes`, `--dry-run`, `--max-rate`, `--out`. Output: `recon/<domain>/05b-ports/`. See [`portscan/README.md`](portscan/README.md). |
 
 ---
 

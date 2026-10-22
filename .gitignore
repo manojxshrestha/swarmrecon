@@ -2,6 +2,10 @@
 recon/
 *.log
 
+# manual portscan input snapshots — target data, never push
+portscan/alive-domains*.txt
+portscan/05b-ports/
+
 # OS/editor noise
 .DS_Store
 *.swp

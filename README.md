@@ -30,7 +30,19 @@
 
 ---
 
-**Quick links:** [What is this?](#what-is-this) · [Quick Install](#quick-install) · [Usage](#usage) · [Pipeline](#pipeline-14-steps) · [Port discovery → brute-force](#port-discovery--service-brute-forcing-manual) · [Directory bruteforce](#directory-bruteforce-manual) · [Engagement Flow](#engagement-flow) · [Wordlists & patterns](#wordlists--patterns) · [Design notes](#design-notes)
+**Quick links:** [What is this?](#what-is-this) · [Quick Install](#quick-install) · [Usage](#usage) · [Manual](#manual) · [Manual: after Step 5](#port-discovery--service-brute-forcing-manual) · [Manual: Step 11](#directory-bruteforce-manual) · [Pipeline](#pipeline-14-steps) · [Engagement Flow](#engagement-flow) · [Wordlists & patterns](#wordlists--patterns) · [Design notes](#design-notes)
+
+---
+
+> [!IMPORTANT]
+> **Two workflows are manual — `swarmrecon.sh` does not run them:**
+>
+> - **Port Discovery & Service Brute-Forcing** — optional extension **after Step 5**
+>   (`masscan` / `dnmasscan` → `nmap -sV` → `brutespray`).
+>   **[Jump to the guide ↓](#port-discovery--service-brute-forcing-manual)**
+> - **Step 11 — Directory Bruteforce** — the pipeline only records a *skip* row;
+>   run `./dir-bruteforce.sh` yourself.
+>   **[Jump to the guide ↓](#directory-bruteforce-manual)**
 
 ---
 
@@ -117,9 +129,27 @@ Notes:
   to your current working directory.
 - Every run truncates and rewrites `recon/<domain>/recon.log`.
 - Colours auto-disable when output is piped or when `NO_COLOR` is set.
-- **Step 11 (directory bruteforce) is manual** — the pipeline records a *skip*
-  row and prints a pointer; run `./dir-bruteforce.sh` yourself when you want
-  path discovery (see [Directory Bruteforce](#directory-bruteforce-manual)).
+- **Manual after Step 5:** port discovery and service brute-forcing are not
+  automated — see [Port Discovery & Service Brute-Forcing](#port-discovery--service-brute-forcing-manual).
+- **Manual Step 11:** directory bruteforce is not automated — the pipeline
+  records a *skip* row; run `./dir-bruteforce.sh` yourself
+  (see [Directory Bruteforce](#directory-bruteforce-manual)).
+
+---
+
+<a id="manual"></a>
+## Manual
+
+`swarmrecon.sh` runs steps 1–14 automatically, with **two deliberate manual
+branches**. It never executes either one for you.
+
+These are the only two parts of the playbook that are **not** run by
+`swarmrecon.sh`. Both are deliberate manual decisions.
+
+| When | Manual workflow | Command / chain | Output | Guide |
+|---|---|---|---|---|
+| **After Step 5** | **Port Discovery & Service Brute-Forcing** | `masscan` / `dnmasscan` → `nmap -sV` → `brutespray` | service inventory + credential results | **[Open guide ↓](#port-discovery--service-brute-forcing-manual)** |
+| **Step 11** | **Directory Bruteforce** | `./dir-bruteforce.sh` | `directories/<host>/` | **[Open guide ↓](#directory-bruteforce-manual)** |
 
 ---
 
@@ -137,18 +167,20 @@ Notes:
 | 8 | DNS bruteforce | `puredns` + `massdns` | `08-puredns/puredns-subdomains.txt` |
 | 9 | Vhost fuzzing | `ffuf` (2 passes vs. dynamic baseline) | `09-vhost/` — `vhost-baseline.txt`, `vhost-mc-all.json`, `vhost-no403.json` |
 | 10 | Zone transfer (AXFR) | `nslookup`, `dig axfr` per NS | `10-zone-transfer/` — `nslookup-NS.txt`, `axfr-<ns>.txt` |
-| 11 | Directory bruteforce | *manual* | not automated — run `./dir-bruteforce.sh` (interactive prompts: target URL → wordlist path) → `directories/<host>/` |
+| 11 | **DIRECTORY BRUTEFORCE — MANUAL** | *not run by pipeline* | run `./dir-bruteforce.sh` (interactive prompts: target URL → wordlist path) → `directories/<host>/` |
 | 12 | Public files | `curl` | `12-robots-sitemap/` — `robots.txt`, `security.txt`, 7 sitemap path variants |
 | 13 | Web crawling (10 sub-steps) | `waymore`, `gau`, `uro`, `anew`, `hakrawler`, `katana`, `gospider`, `dnsx`, `httpx`, `extracturls.sh`, `filter.sh`, `gf` | root crawl files + `gooutput/` + `check/` (+ `check/gf/`) |
 | 14 | High-value paths | `ffuf` (auto-calibrated) — sources: `https://<domain>` + each host in `alive-domains.txt` | `14-high-value/` — `high-value-results.json` (merged), `high-value-results.txt`, `high-value-<host>.json` |
 
-> **After step 5:** an optional manual extension — masscan → nmap `-sV` →
-> brutespray, see [Port Discovery & Service Brute-Forcing](#port-discovery--service-brute-forcing-manual)
-> (not automated: an explicit credential-guessing decision).
-
-> **Step 11 is manual** — `swarmrecon.sh` only records a *skip* row; directory
-> bruteforce runs when you invoke `./dir-bruteforce.sh` yourself.
-> Full guide: [Directory Bruteforce (manual)](#directory-bruteforce-manual).
+> [!IMPORTANT]
+> **Manual branches — the pipeline never runs these:**
+>
+> - **After Step 5 — [Port Discovery & Service Brute-Forcing](#port-discovery--service-brute-forcing-manual):**
+>   `masscan` / `dnmasscan` → `nmap -sV` → `brutespray`. This is an explicit
+>   credential-guessing decision.
+> - **Step 11 — [Directory Bruteforce](#directory-bruteforce-manual):**
+>   `./dir-bruteforce.sh`. `swarmrecon.sh` only records a *skip* row and prints
+>   the pointer.
 
 ### Step 13 in detail
 
@@ -165,7 +197,12 @@ Notes:
 
 ---
 
-## Port Discovery & Service Brute-Forcing (manual)
+<a id="port-discovery--service-brute-forcing-manual"></a>
+## Port Discovery & Service Brute-Forcing — MANUAL (after Step 5)
+
+> [!IMPORTANT]
+> **Not run by `swarmrecon.sh`.** This is an optional manual extension after
+> Step 5. Only use it with explicit authorization for credential guessing.
 
 Optional workflow that extends **step 5** — it covers the complete pipeline from
 fast port discovery to service-aware credential guessing using
@@ -310,7 +347,12 @@ brutespray -f nmap-scan.gnmap -o scan-results
 
 ---
 
-## Directory Bruteforce (manual)
+<a id="directory-bruteforce-manual"></a>
+## Directory Bruteforce — MANUAL (Step 11)
+
+> [!IMPORTANT]
+> **Not run by `swarmrecon.sh`.** The pipeline records a *skip* row for Step 11.
+> Run `./dir-bruteforce.sh` yourself when you want path discovery.
 
 Optional workflow that **step 11** hands off to — `swarmrecon.sh` never runs it,
 it only records a *skip* row in the summary. `./dir-bruteforce.sh` is a

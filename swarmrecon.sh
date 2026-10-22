@@ -55,6 +55,45 @@ WL_DIR="$SWARM_DIR/wordlists"
 # fresh shell (before `pipx ensurepath` takes effect) still finds them
 export PATH="$HOME/.local/bin:$HOME/go/bin:$PATH"
 
+# ---------- one writer per target ----------
+# Two runs for the same domain share recon/<domain>/: one run's step cleanup
+# (for example the Step 7 subdomains/ staging dir) can race the other run's
+# cp, and both truncate/interleave recon.log. Lock before OUTDIR is created
+# or the log is truncated, so a second run exits without touching the tree.
+LOCK_DIR="${XDG_CACHE_HOME:-$HOME/.cache}/swarmrecon"
+mkdir -p "$LOCK_DIR"
+LOCK_FILE="$LOCK_DIR/${DOMAIN}.lock"
+if command -v flock >/dev/null 2>&1; then
+    # Keep the lock file: flock state belongs to the open fd, not the path.
+    # Do not unlink it on exit (an unlink/recreate race could admit a third run).
+    exec 9>>"$LOCK_FILE"
+    if ! flock -n 9; then
+        holder="$(cat "$LOCK_FILE" 2>/dev/null || true)"
+        printf '%s[!]%s another swarmrecon run is already active for %s%s%s%s\n' \
+            "$C_RED" "$C_RESET" "$C_BOLD" "$DOMAIN" "$C_RESET" \
+            "${holder:+ (pid $holder)}" >&2
+        printf '    wait for it to finish before starting another run.\n' >&2
+        exit 1
+    fi
+    : > "$LOCK_FILE"
+    printf '%s\n' "$$" > "$LOCK_FILE"
+else
+    # Fallback for systems without util-linux flock (macOS, busybox).
+    LOCK_FILE="$LOCK_DIR/${DOMAIN}.lock.d"
+    if ! mkdir "$LOCK_FILE" 2>/dev/null; then
+        holder="$(cat "$LOCK_FILE/pid" 2>/dev/null || true)"
+        printf '%s[!]%s another swarmrecon run is already active for %s%s%s%s\n' \
+            "$C_RED" "$C_RESET" "$C_BOLD" "$DOMAIN" "$C_RESET" \
+            "${holder:+ (pid $holder)}" >&2
+        printf '    wait for it to finish before starting another run.\n' >&2
+        exit 1
+    fi
+    printf '%s\n' "$$" > "$LOCK_FILE/pid"
+    trap 'rm -rf "$LOCK_FILE"' EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+fi
+
 OUTDIR="recon/${DOMAIN}"
 mkdir -p "$OUTDIR"
 LOG="$OUTDIR/recon.log"
@@ -1558,11 +1597,12 @@ step_vhost_ffuf
 step_banner 10 "Zone transfer (AXFR)"
 step_zone_transfer
 
-# Step 11 removed from the pipeline: directory bruteforce is manual now.
-# Run ./dir-bruteforce.sh interactively (prompts for URL + wordlist);
-# output lands in <swarmrecon-root>/directories/<host>/.
-info "Step 11 removed — run ./dir-bruteforce.sh manually for directory bruteforce"
-note_result "skip" "11 · Directory bruteforce" "manual — run ./dir-bruteforce.sh"
+# Step 11 is manual.
+step_banner 11 "Directory bruteforce — MANUAL"
+warn "NOT automated — run ./dir-bruteforce.sh yourself (README → Manual → Step 11)"
+info "Full guide: README.md → Manual → Step 11"
+note_result "skip" "11 · Directory bruteforce" "manual — ./dir-bruteforce.sh; README → Manual"
+# Step 11 manual notice: see README -> Manual -> Step 11.
 
 step_banner 12 "Public files (robots / security.txt / sitemaps)"
 step_robots_sitemap

@@ -30,7 +30,7 @@ usage() {
     printf '%sUsage:%s ./swarmrecon.sh -d <domain> [--resume | --from <n>]\n' "$C_BOLD" "$C_RESET"
     printf '  %s-d, --domain <domain>%s  target domain (required)\n' "$C_DIM" "$C_RESET"
     printf '  %s-r, --resume%s          resume at the first unfinished step\n' "$C_DIM" "$C_RESET"
-    printf '  %s-f, --from <n>%s        start at step n (1-14)\n' "$C_DIM" "$C_RESET"
+    printf '  %s-f, --from <n>%s        start at step n (1-15)\n' "$C_DIM" "$C_RESET"
     printf '  %s-h, --help%s            show this help\n' "$C_DIM" "$C_RESET"
     printf '  %sOutput:%s recon/<domain>/<NN-step>/\n' "$C_DIM" "$C_RESET"
     exit "${1:-1}"
@@ -51,8 +51,8 @@ while [ $# -gt 0 ]; do
 done
 [ -z "$DOMAIN" ] && usage 1
 
-if ! [[ "$START_STEP" =~ ^[0-9]+$ ]] || [ "$START_STEP" -lt 1 ] || [ "$START_STEP" -gt 14 ]; then
-    printf '%s[!]%s --from must be a step number between 1 and 14 (got: %s)\n' \
+if ! [[ "$START_STEP" =~ ^[0-9]+$ ]] || [ "$START_STEP" -lt 1 ] || [ "$START_STEP" -gt 15 ]; then
+    printf '%s[!]%s --from must be a step number between 1 and 15 (got: %s)\n' \
         "$C_RED" "$C_RESET" "$START_STEP" >&2
     exit 1
 fi
@@ -1470,6 +1470,244 @@ PYEOF
 }
 
 # ================================================================
+#  Step 15 — JavaScript collection + endpoint extraction
+#  check/livejslinks.txt → js_files/ → analysis.md → LinkFinder endpoints
+#  Fail-soft: missing tools/empty lists skip this step only.
+# ================================================================
+step_js() {
+    local t0; t0=$(now_s)
+    local sdir="$OUTDIR/js_files"
+    local check_dir="$OUTDIR/check"
+    local js_links="$SWARM_DIR/js-scripts/js-links.sh"
+    local downloader="$SWARM_DIR/js-scripts/downloadjs.py"
+    local analyzer="$SWARM_DIR/js-scripts/analyzejs.py"
+    local lf_wrapper="$SWARM_DIR/js-scripts/linkfinder.sh"
+    local resolver="$SWARM_DIR/js-scripts/js-endpoints.py"
+
+    if [ "${SWARMRECON_JS:-1}" = "0" ]; then
+        warn "Step 15 SKIPPED: SWARMRECON_JS=0"
+        note_result "skip" "15 · JavaScript" "disabled by SWARMRECON_JS=0"
+        return 0
+    fi
+    if [ ! -s "$check_dir/crawledurls.txt" ]; then
+        warn "Step 15 SKIPPED: check/crawledurls.txt missing/empty (run Step 13)"
+        note_result "skip" "15 · JavaScript" "check/crawledurls.txt missing — run Step 13"
+        return 0
+    fi
+    if [ ! -f "$js_links" ] || [ ! -f "$downloader" ]; then
+        warn "Step 15 SKIPPED: js-links.sh or downloadjs.py missing"
+        note_result "skip" "15 · JavaScript" "js-links.sh/downloadjs.py missing"
+        return 0
+    fi
+
+    # fresh outputs: a failed rerun must not leave stale JS endpoints behind
+    rm -f "$check_dir/livejslinks.txt" "$check_dir/livejslinks-dropped.txt" \
+          "$check_dir/js-endpoints.txt" "$check_dir/js-endpoints-absolute.txt"
+    rm -rf -- "$sdir"
+    mkdir -p "$sdir/files" "$OUTDIR/urls" "$check_dir"
+
+    cmd "js-links.sh --domain ${DOMAIN} --input check/crawledurls.txt"
+    if ! ( cd "$OUTDIR" && bash "$js_links" \
+            --domain "$DOMAIN" \
+            --input check/crawledurls.txt \
+            --output check/livejslinks.txt \
+            --dropped check/livejslinks-dropped.txt ) >>"$LOG" 2>&1; then
+        err "js-links.sh failed — see ${LOG}"
+        note_result "fail" "15 · JavaScript" "js-links.sh failed — see recon.log"
+        return 0
+    fi
+
+    local njs=0
+    njs=$(grep -c . "$check_dir/livejslinks.txt" 2>/dev/null || true)
+    if [ "${njs:-0}" -eq 0 ]; then
+        warn "Step 15: no .js/.mjs/.cjs URLs after filtering"
+        note_result "skip" "15 · JavaScript" "0 JS URLs in crawl output"
+        return 0
+    fi
+    ok "check/livejslinks.txt → ${njs} JS URL(s)"
+
+    # Scope boundary: prefer an explicit/user scope file; otherwise build
+    # exact:<host> entries from the JS URL list so the downloader cannot roam.
+    local scope_file="$sdir/scope.txt"
+    local user_scope="${SWARMRECON_SCOPE_FILE:-}"
+    if [ -z "$user_scope" ]; then
+        for candidate in \
+            "$OUTDIR/scope/scope-engagement.txt" \
+            "$OUTDIR/scope/scope.txt" \
+            "$OUTDIR/scope.txt"; do
+            [ -s "$candidate" ] || continue
+            user_scope="$candidate"
+            break
+        done
+    fi
+    if [ -n "$user_scope" ] && [ -s "$user_scope" ]; then
+        if [ "$user_scope" != "$scope_file" ]; then
+            cp -f "$user_scope" "$scope_file" || {
+                err "could not copy scope file to ${scope_file}"
+                note_result "fail" "15 · JavaScript" "scope file copy failed"
+                return 0
+            }
+        fi
+        info "scope: ${user_scope}"
+    else
+        if [ -n "$user_scope" ]; then
+            warn "scope file missing/empty: ${user_scope} — deriving exact hosts from JS list"
+        fi
+        if ! python3 - "$check_dir/livejslinks.txt" "$scope_file" <<'PY' >>"$LOG" 2>&1
+import sys
+from urllib.parse import urlsplit
+
+hosts = set()
+for line in open(sys.argv[1], encoding="utf-8", errors="replace"):
+    try:
+        host = (urlsplit(line.strip()).hostname or "").lower()
+    except ValueError:
+        continue
+    if host:
+        hosts.add(host)
+with open(sys.argv[2], "w", encoding="utf-8") as out:
+    for host in sorted(hosts):
+        out.write(f"exact:{host}\n")
+PY
+        then
+            err "could not build ${scope_file}"
+            note_result "fail" "15 · JavaScript" "scope generation failed"
+            return 0
+        fi
+        info "scope: derived exact hosts from JS list → ${scope_file}"
+    fi
+
+    if [ ! -s "$scope_file" ]; then
+        warn "Step 15: scope file is empty — downloader would refuse every URL"
+        note_result "skip" "15 · JavaScript" "empty scope file"
+        return 0
+    fi
+
+    cmd "downloadjs.py --input check/livejslinks.txt --scope-file js_files/scope.txt --out js_files"
+    if ! ( cd "$OUTDIR" && python3 "$downloader" \
+            --input check/livejslinks.txt \
+            --scope-file js_files/scope.txt \
+            --out js_files ) >>"$LOG" 2>&1; then
+        err "downloadjs.py failed — see ${LOG}"
+        note_result "fail" "15 · JavaScript" "downloadjs.py failed — see recon.log"
+        return 0
+    fi
+
+    local manifest="$sdir/manifest.tsv"
+    if [ ! -s "$manifest" ]; then
+        warn "Step 15: downloader produced no manifest"
+        note_result "fail" "15 · JavaScript" "manifest missing"
+        return 0
+    fi
+
+    local n_ok=0
+    n_ok=$(awk -F'\t' 'NR > 1 && ($2 == "OK" || $2 == "SKIP" || ($2 ~ /^[0-9]+$/ && $2 >= 200 && $2 < 300)) { n++ } END { print n + 0 }' "$manifest")
+    local n_files=$n_ok
+    if [ "$n_files" -eq 0 ]; then
+        warn "Step 15: 0 JS files downloaded (see js_files/dropped.txt and recon.log)"
+        note_result "fail" "15 · JavaScript" "0 files downloaded"
+        return 0
+    fi
+
+    # OpenSwarm-compatible URL/local lists.
+    if python3 - "$manifest" "$OUTDIR/urls/js_files.txt" "$OUTDIR/urls/js_files_local.txt" <<'PY' >>"$LOG" 2>&1
+import csv
+import sys
+from pathlib import Path
+
+manifest = Path(sys.argv[1])
+urls_out = Path(sys.argv[2])
+local_out = Path(sys.argv[3])
+base = manifest.parent
+urls = []
+local = []
+seen_urls = set()
+seen_local = set()
+
+with manifest.open(encoding="utf-8", errors="replace", newline="") as stream:
+    for row in csv.DictReader(stream, delimiter="\t"):
+        status = (row.get("status") or "").upper()
+        success = status in {"OK", "SKIP"} or (status.isdigit() and 200 <= int(status) < 300)
+        if not success:
+            continue
+        url = (row.get("url") or "").strip()
+        rel = (row.get("path") or "").strip()
+        if url and url not in seen_urls:
+            seen_urls.add(url)
+            urls.append(url)
+        if rel:
+            path = (base / rel).resolve()
+            if path.is_file() and str(path) not in seen_local:
+                seen_local.add(str(path))
+                local.append(str(path))
+
+urls_out.write_text("\n".join(urls) + ("\n" if urls else ""), encoding="utf-8")
+local_out.write_text("\n".join(local) + ("\n" if local else ""), encoding="utf-8")
+PY
+    then
+        info "urls/js_files.txt + urls/js_files_local.txt written"
+    else
+        warn "could not write urls/js_files*.txt — see ${LOG}"
+    fi
+
+    if [ -f "$analyzer" ]; then
+        cmd "analyzejs.py --input js_files --manifest js_files/manifest.tsv"
+        if ( cd "$OUTDIR" && python3 "$analyzer" \
+                --input js_files \
+                --manifest js_files/manifest.tsv \
+                --scope-file js_files/scope.txt \
+                --out js_files/analysis.md ) >>"$LOG" 2>&1; then
+            ok "js_files/analysis.md written"
+        else
+            warn "analyzejs.py failed — see ${LOG}"
+        fi
+    else
+        warn "analyzejs.py missing — offline JS analysis skipped"
+    fi
+
+    local lf_home="${LINKFINDER_HOME:-$HOME/LinkFinder}"
+    local lf_available=0
+    if [ -f "$lf_home/linkfinder.py" ] && \
+       { [ -x "$lf_home/venv/bin/python" ] || [ -x "$lf_home/.venv/bin/python" ]; }; then
+        lf_available=1
+    fi
+
+    if [ "$lf_available" -eq 1 ] && [ -f "$lf_wrapper" ]; then
+        cmd "linkfinder.sh -i js_files/files --raw-out js_files/linkfinder.raw.txt"
+        if ( cd "$OUTDIR" && bash "$lf_wrapper" \
+                -i js_files/files \
+                --raw-out js_files/linkfinder.raw.txt ) > "$sdir/linkfinder.txt" 2>>"$LOG"; then
+            local nlf=0
+            nlf=$(grep -c . "$sdir/linkfinder.txt" 2>/dev/null || true)
+            ok "js_files/linkfinder.txt → ${nlf:-0} endpoint(s)"
+        else
+            warn "linkfinder.sh failed — see ${LOG}"
+        fi
+    else
+        warn "LinkFinder not installed at ${lf_home} — LinkFinder endpoints skipped"
+    fi
+
+    if [ "$lf_available" -eq 1 ] && [ -f "$resolver" ]; then
+        cmd "js-endpoints.py --input js_files --manifest js_files/manifest.tsv"
+        if ( cd "$OUTDIR" && python3 "$resolver" \
+                --input js_files \
+                --manifest js_files/manifest.tsv \
+                --scope-file js_files/scope.txt ) >>"$LOG" 2>&1; then
+            ok "check/js-endpoints.txt + check/js-endpoints-absolute.txt written"
+        else
+            warn "js-endpoints.py failed — see ${LOG}"
+        fi
+    elif [ ! -f "$resolver" ]; then
+        warn "js-endpoints.py missing — endpoint resolution skipped"
+    fi
+
+    local n_abs=0
+    n_abs=$(grep -c . "$check_dir/js-endpoints-absolute.txt" 2>/dev/null || true)
+    ok "done in $(( $(now_s) - t0 ))s → js_files/ (${n_files} files) · ${n_abs:-0} absolute endpoints"
+    note_result "ok" "15 · JavaScript" "js_files/ · ${n_files} files · ${n_abs:-0} endpoints"
+}
+
+# ================================================================
 #  Step 3 — Passive intel (whois · msftrecon · Scopify · Spoofy · cloud_enum)
 #  openswarm Phase-3 parity: same module commands and output filenames as
 #  scripts/tools/phase-intel.sh (so phase3-3b-4-skip-prompt.md copies line up).
@@ -1979,6 +2217,9 @@ run_step 13 "Web crawling (waymore · gau · hakrawler · katana · gospider)" \
 
 run_step 14 "High-value paths (ffuf · secrets / disclosure / juicy files)" \
     "14 · High-value" step_highvalue
+
+run_step 15 "JavaScript collection + LinkFinder" \
+    "15 · JavaScript" step_js
 
 # ---------------------------------------------------------------
 # Step N (TODO): add next recon steps here following the same shape:

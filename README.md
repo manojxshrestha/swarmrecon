@@ -278,7 +278,7 @@ These are the only two parts of the playbook that are **not** run by
 | 6 | Certificate Transparency | `ctfr` (auto-venv) + `httpx` | `06-ctfr/` — `ctfr-subdomains.txt`, `live-ctfr-subdomains.txt` (live-probed) |
 | 7 | Subdomain enumeration | `subenum` + CT merge | root **`https-subs.txt`**, **`alive-domains.txt`** |
 | 8 | DNS bruteforce | `puredns` + `massdns` | `08-puredns/puredns-subdomains.txt` (forwarded by the Step 13/14 merge) |
-| 9 | Vhost fuzzing | `ffuf` (2 passes vs. dynamic baseline) | `09-vhost/` — `vhost-baseline.txt`, `vhost-mc-all.json`, `vhost-no403.json` (hits forwarded as `<label>.<domain>` candidates) |
+| 9 | Vhost fuzzing | `ffuf` (2 passes vs. dynamic baseline) | `09-vhost/` — `vhost-baseline.txt`, `vhost-mc-all.json`, `vhost-no403.json` (hits forwarded as `<label>.<domain>` candidates) **Note:** Pass A uses `-fc 400 -mc all -ac` to filter baseline; Pass B uses `-fc 400,403` (404 intentionally kept to catch custom 404 pages) |
 | 10 | Zone transfer (AXFR) | `nslookup`, `dig axfr` per NS | `10-zone-transfer/` — `nslookup-NS.txt`, `axfr-<ns>.txt` |
 | 11 | **DIRECTORY BRUTEFORCE — MANUAL** | *not run by pipeline* | run `./bruteforce/dir-bruteforce.sh` (interactive prompts: target URL → wordlist path) → `directories/<host>/` |
 | 12 | Public files | `curl` | `12-robots-sitemap/` — `robots.txt`, `security.txt`, 7 sitemap path variants (sitemap URLs forwarded as crawl seeds) |

@@ -46,9 +46,10 @@ STEP_NAMES = {
     12: "robots / sitemap",
     13: "Web crawl",
     14: "High-value paths",
+    15: "JavaScript collection",
 }
 # steps that participate in resume (11 is manual)
-RESUME_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14]
+RESUME_STEPS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 12, 13, 14, 15]
 
 TOOL_NAMES = {
     "swarmrecon.sh", "katana", "gospider", "waymore", "gau", "hakrawler",

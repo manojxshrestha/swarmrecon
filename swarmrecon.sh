@@ -1478,11 +1478,11 @@ step_js() {
     local t0; t0=$(now_s)
     local sdir="$OUTDIR/js_files"
     local check_dir="$OUTDIR/check"
-    local js_links="$SWARM_DIR/js-scripts/js-scripts/js-links.sh"
-    local downloader="$SWARM_DIR/js-scripts/js-scripts/downloadjs.py"
-    local analyzer="$SWARM_DIR/js-scripts/js-scripts/analyzejs.py"
-    local lf_wrapper="$SWARM_DIR/js-scripts/js-scripts/linkfinder.sh"
-    local resolver="$SWARM_DIR/js-scripts/js-scripts/js-endpoints.py"
+    local js_links="$SWARM_DIR/js-scripts/js-links.sh"
+    local downloader="$SWARM_DIR/js-scripts/downloadjs.py"
+    local analyzer="$SWARM_DIR/js-scripts/analyzejs.py"
+    local lf_wrapper="$SWARM_DIR/js-scripts/linkfinder.sh"
+    local resolver="$SWARM_DIR/js-scripts/js-endpoints.py"
 
     if [ "${SWARMRECON_JS:-1}" = "0" ]; then
         warn "Step 15 SKIPPED: SWARMRECON_JS=0"

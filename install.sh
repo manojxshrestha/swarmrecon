@@ -28,6 +28,20 @@ export PATH="$HOME/go/bin:$HOME/.local/bin:$PATH"
 echo "[*] swarmrecon — dependency setup"
 
 # ================================================================
+#  Ensure Go environment is set up correctly
+# ================================================================
+export PATH="$HOME/go/bin:$HOME/.local/bin:$PATH"
+
+# Ensure GOPATH/bin is in PATH persistently
+if [[ ":$PATH:" != *":$HOME/go/bin:"* ]]; then
+    echo 'export PATH="$PATH:$HOME/go/bin"' >> ~/.bashrc
+    export PATH="$PATH:$HOME/go/bin"
+fi
+
+# Ensure GO111MODULE=on for all Go installs
+export GO111MODULE=on
+
+# ================================================================
 #  gau — Step 13 archive URL provider config
 #  Written early so an interrupted/failed optional install cannot skip it.
 #  Create-only: an existing ~/.gau.toml is never overwritten.
@@ -292,12 +306,10 @@ echo "[*] unfurl"
 if command -v unfurl >/dev/null 2>&1 || [ -x "$HOME/go/bin/unfurl" ]; then
     echo "[+] unfurl: already installed"
 elif command -v go >/dev/null 2>&1; then
-    if go install github.com/tomnomnom/unfurl@latest && \
-       { command -v unfurl >/dev/null 2>&1 || [ -x "$HOME/go/bin/unfurl" ]; }; then
-        echo "[+] unfurl: installed (~/go/bin/unfurl)"
-    else
+    GO111MODULE=on go install -v github.com/tomnomnom/unfurl@latest && \
+       { command -v unfurl >/dev/null 2>&1 || [ -x "$HOME/go/bin/unfurl" ]; } && \
+        echo "[+] unfurl: installed (~/go/bin/unfurl)" || \
         echo "[!] unfurl: install FAILED — Scopify will skip at step 3"
-    fi
 else
     echo "[-] unfurl: go not found — skipped (Scopify will skip at step 3)"
 fi
@@ -323,12 +335,12 @@ echo "[*] ProjectDiscovery httpx"
 # A real go-installed binary is preferred over a symlink to a copy elsewhere,
 # so a fresh setup always has a reproducible, verifiable build. If
 # ~/.local/bin/httpx is already the PD binary, skip.
-if [ -x "$TOOLS_BIN/httpx" ] && is_pd_httpx "$TOOLS_BIN/httpx"; then
-    echo "[+] httpx: ProjectDiscovery already installed (${TOOLS_BIN}/httpx)"
+if command -v httpx >/dev/null 2>&1 && is_pd_httpx "$(command -v httpx)"; then
+    echo "[+] httpx: ProjectDiscovery already installed ($(command -v httpx))"
 elif command -v go >/dev/null 2>&1; then
     echo "[*] go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest → ${TOOLS_BIN}..."
     rm -f "$TOOLS_BIN/httpx"   # drop a stale symlink/shim before installing
-    if GOBIN="$TOOLS_BIN" go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest; then
+    if GOBIN="$TOOLS_BIN" GO111MODULE=on go install -v github.com/projectdiscovery/httpx/cmd/httpx@latest; then
         echo "[+] httpx: installed (${TOOLS_BIN}/httpx)"
     else
         echo "[!] httpx: go install FAILED — Steps 6/7/13 live probes will be empty"
@@ -338,14 +350,14 @@ else
 fi
 
 # Prove the binary is the ProjectDiscovery Go build (not python3-httpx).
-if [ -x "$TOOLS_BIN/httpx" ]; then
-    hx_module="$(go version -m "$TOOLS_BIN/httpx" 2>/dev/null \
+if command -v httpx >/dev/null 2>&1 && is_pd_httpx "$(command -v httpx)"; then
+    hx_module="$(go version -m "$(command -v httpx)" 2>/dev/null \
         | awk '$1=="path"{print $2; exit}' || true)"
     if [ "$hx_module" = "github.com/projectdiscovery/httpx/cmd/httpx" ] \
-        && is_pd_httpx "$TOOLS_BIN/httpx"; then
-        echo "[+] httpx: verified Go build ($( "$TOOLS_BIN/httpx" -version 2>&1 | awk '/Current Version/{print $NF; exit}' || true))"
+        && is_pd_httpx "$(command -v httpx)"; then
+        echo "[+] httpx: verified Go build ($(httpx -version 2>&1 | awk '/Current Version/{print $NF; exit}' || true))"
     else
-        echo "[!] httpx: ${TOOLS_BIN}/httpx is NOT the ProjectDiscovery Go binary (module: ${hx_module:-unknown})"
+        echo "[!] httpx is NOT the ProjectDiscovery Go binary"
     fi
 fi
 
@@ -355,7 +367,7 @@ if command -v dnsx >/dev/null 2>&1 || [ -x "$DNSX_BIN" ]; then
     echo "[+] dnsx: already installed ($(command -v dnsx 2>/dev/null || printf '%s' "$DNSX_BIN"))"
 elif command -v go >/dev/null 2>&1; then
     echo "[*] dnsx not found — installing → ${TOOLS_BIN}..."
-    if GOBIN="$TOOLS_BIN" go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest; then
+    if GOBIN="$TOOLS_BIN" GO111MODULE=on go install github.com/projectdiscovery/dnsx/cmd/dnsx@latest; then
         echo "[+] dnsx: installed"
     else
         echo "[!] dnsx: install FAILED — Steps 7/13 dnsx slices will skip"
@@ -384,7 +396,7 @@ for spec in "${CRAWL_TOOLS[@]}"; do
         echo "[+] ${tool}: already installed"
     elif command -v go >/dev/null 2>&1; then
         echo "[*] ${tool} — installing → ${TOOLS_BIN}..."
-        if GOBIN="$TOOLS_BIN" go install "$module" 2>/dev/null; then
+        if GOBIN="$TOOLS_BIN" GO111MODULE=on go install "$module" 2>/dev/null; then
             echo "[+] ${tool}: installed"
         else
             echo "[!] ${tool}: install FAILED — its Step 13 slice will skip"

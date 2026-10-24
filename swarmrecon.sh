@@ -1002,10 +1002,10 @@ step_subenum() {
 #    gau    echo $D | gau --threads 10 --subs | anew gauurls.txt
 #    merge  cat wayurls gauurls | uro | sort -u > waygauurls.txt
 #    hakrawler / katana / gospider  on https-subs.txt
-#    extracturls.sh -f gooutput     -> alivesubsurls.txt (moved up to root)
+#    url-tools/extracturls.sh -f gooutput     -> alivesubsurls.txt (moved up to root)
 #    final merge: cat waygauurls cleansubskatanaurls hakcrawlurls alivesubsurls
 #                 | uro > merged-crawl.txt
-#    filter.sh (domain via stdin) -> check/ ; downstream uses only
+#    url-tools/filter.sh (domain via stdin) -> check/ ; downstream uses only
 #    check/param-urls.txt
 #    gf-scripts/gf-extract.sh check/param-urls.txt -> check/gf/gf-*.txt (pattern classes)
 #  All crawl artifacts live directly in recon/<domain>/ (same convention
@@ -1193,23 +1193,23 @@ step_crawl() {
         warn "gospider not found — skipped"; skipped=$((skipped + 1))
     fi
 
-    # --- 7. extract alive URLs from gooutput (user's extracturls.sh) ---
-    #   ./extracturls.sh -f gooutput -d example.com
+    # --- 7. extract alive URLs from gooutput (user's url-tools/extracturls.sh) ---
+    #   ./url-tools/extracturls.sh -f gooutput -d example.com
     #   hard-requires dnsx + httpx (script checks both on line 40);
     #   writes allsubsurls.txt / alivesubdomains.txt / alivesubsurls.txt
     #   INTO gooutput/, then alivesubsurls.txt moves to recon/<domain>/ root.
-    local extractor="$SWARM_DIR/extracturls.sh"
+    local extractor="$SWARM_DIR/url-tools/extracturls.sh"
     if [ ! -d "$OUTDIR/gooutput" ] || [ -z "$(ls -A "$OUTDIR/gooutput" 2>/dev/null)" ]; then
         warn "gooutput/ empty (gospider skipped or failed) — extracturls skipped"
         skipped=$((skipped + 1))
     elif [ ! -f "$extractor" ]; then
-        warn "extracturls.sh not found in ${SWARM_DIR} — skipped"
+        warn "url-tools/extracturls.sh not found in ${SWARM_DIR} — skipped"
         skipped=$((skipped + 1))
     elif ! command -v dnsx >/dev/null 2>&1 || ! command -v httpx >/dev/null 2>&1; then
-        warn "dnsx and/or httpx missing (required by extracturls.sh) — skipped"
+        warn "dnsx and/or httpx missing (required by url-tools/extracturls.sh) — skipped"
         skipped=$((skipped + 1))
     else
-        cmd "extracturls.sh -f gooutput -d ${DOMAIN}   (dnsx + 2x httpx)"
+        cmd "url-tools/extracturls.sh -f gooutput -d ${DOMAIN}   (dnsx + 2x httpx)"
         if bash "$extractor" -f "$OUTDIR/gooutput" -d "$DOMAIN" >>"$LOG" 2>&1; then
             if [ -s "$OUTDIR/gooutput/alivesubsurls.txt" ]; then
                 if mv -f "$OUTDIR/gooutput/alivesubsurls.txt" "$OUTDIR/alivesubsurls.txt"; then
@@ -1223,7 +1223,7 @@ step_crawl() {
                 err "extracturls ran but produced no alivesubsurls.txt — see ${LOG}"
             fi
         else
-            err "extracturls.sh FAILED (exit=$?) — see ${LOG}"
+            err "url-tools/extracturls.sh FAILED (exit=$?) — see ${LOG}"
         fi
     fi
 
@@ -1263,34 +1263,34 @@ step_crawl() {
         info "no crawl outputs produced — merged-crawl.txt skipped"
     fi
 
-    # --- 9. filter.sh: liveness + param extraction (user's tool) ---
-    #   ./filter.sh   (interactive: "Enter domain..." fed via stdin)
+    # --- 9. url-tools/filter.sh: liveness + param extraction (user's tool) ---
+    #   ./url-tools/filter.sh   (interactive: "Enter domain..." fed via stdin)
     #   runs with cwd=recon/<domain>/ so its default input merged-crawl.txt
     #   resolves there and outputs land in recon/<domain>/check/.
     #   6 categories written; downstream consumes ONLY check/param-urls.txt.
-    local filterer="$SWARM_DIR/filter.sh"
+    local filterer="$SWARM_DIR/url-tools/filter.sh"
     if [ ! -s "$OUTDIR/merged-crawl.txt" ]; then
-        warn "merged-crawl.txt missing/empty — filter.sh skipped"
+        warn "merged-crawl.txt missing/empty — url-tools/filter.sh skipped"
         skipped=$((skipped + 1))
     elif [ ! -f "$filterer" ]; then
-        warn "filter.sh not found in ${SWARM_DIR} — skipped"
+        warn "url-tools/filter.sh not found in ${SWARM_DIR} — skipped"
         skipped=$((skipped + 1))
     elif ! command -v httpx >/dev/null 2>&1; then
-        warn "httpx missing (required by filter.sh) — skipped"
+        warn "httpx missing (required by url-tools/filter.sh) — skipped"
         skipped=$((skipped + 1))
     else
-        cmd "echo ${DOMAIN} | filter.sh   (cwd: recon/${DOMAIN}/)"
+        cmd "echo ${DOMAIN} | url-tools/filter.sh   (cwd: recon/${DOMAIN}/)"
         if ( cd "$OUTDIR" && echo "$DOMAIN" | bash "$filterer" ) >>"$LOG" 2>&1; then
             if [ -s "$OUTDIR/check/param-urls.txt" ]; then
                 local npu=0; npu=$(grep -c 'http' "$OUTDIR/check/param-urls.txt" 2>/dev/null || true)
-                ok "filter.sh → check/param-urls.txt (${npu:-0} param URLs)"
+                ok "url-tools/filter.sh → check/param-urls.txt (${npu:-0} param URLs)"
                 ran=$((ran + 1))
             else
-                warn "filter.sh ran but produced 0 live URLs — no param-urls.txt"
+                warn "url-tools/filter.sh ran but produced 0 live URLs — no param-urls.txt"
                 ran=$((ran + 1))
             fi
         else
-            err "filter.sh FAILED (exit=$?) — domain mismatch or input problem, see ${LOG}"
+            err "url-tools/filter.sh FAILED (exit=$?) — domain mismatch or input problem, see ${LOG}"
         fi
     fi
 
@@ -1300,7 +1300,7 @@ step_crawl() {
     #    at gf-scripts/gf-extract.sh line 21; args are explicit here to avoid that)
     local gfex="$SWARM_DIR/gf-scripts/gf-extract.sh"
     if [ ! -s "$OUTDIR/check/param-urls.txt" ]; then
-        warn "check/param-urls.txt missing/empty (filter.sh) — gf-extract skipped"
+        warn "check/param-urls.txt missing/empty (url-tools/filter.sh) — gf-extract skipped"
         skipped=$((skipped + 1))
     elif [ ! -f "$gfex" ]; then
         warn "gf-scripts/gf-extract.sh not found in ${SWARM_DIR} — skipped"

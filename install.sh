@@ -5,6 +5,7 @@
 # is already installed; only missing components get installed. Markers:
 #   ~/ctfr/venv/.deps-ok      (ctfr requirements done)
 #   ~/subenum/.install-done   (subenum's own install.sh done)
+#   ~/LinkFinder/venv         (Step 15 local JS endpoint extraction)
 # Intel/OSINT tools (steps 3-4) are existence-checked (.git / binary) too;
 # uv is installed automatically when missing.
 # Wordlists ship with the repo; GF patterns are synced into ~/.gf.
@@ -424,6 +425,38 @@ else
         echo "[+] waymore: installed (${HOME}/waymore/venv)"
     else
         echo "[!] waymore: install FAILED — Step 13 waymore slice will skip"
+    fi
+fi
+
+# ================================================================
+#  LinkFinder — Step 15 local JavaScript endpoint extraction
+#  $HOME/LinkFinder/venv + jsbeautifier; local files only (no URL mode)
+# ================================================================
+echo "[*] LinkFinder (Step 15 venv)"
+LINKFINDER_DIR="$HOME/LinkFinder"
+if [ -f "$LINKFINDER_DIR/linkfinder.py" ] && \
+   [ -x "$LINKFINDER_DIR/venv/bin/python" ] && \
+   "$LINKFINDER_DIR/venv/bin/python" -c 'import jsbeautifier' 2>/dev/null; then
+    echo "[+] LinkFinder: already installed (${LINKFINDER_DIR}) — skipping"
+else
+    if [ ! -d "$LINKFINDER_DIR/.git" ]; then
+        git clone https://github.com/GerbenJavado/LinkFinder.git "$LINKFINDER_DIR" 2>/dev/null || \
+            echo "[!] LinkFinder: clone FAILED — Step 15 LinkFinder slices will skip"
+    fi
+    if [ -f "$LINKFINDER_DIR/linkfinder.py" ]; then
+        if [ ! -x "$LINKFINDER_DIR/venv/bin/python" ]; then
+            python3 -m venv "$LINKFINDER_DIR/venv" 2>/dev/null || true
+        fi
+        if [ -x "$LINKFINDER_DIR/venv/bin/python" ]; then
+            "$LINKFINDER_DIR/venv/bin/python" -m pip install --quiet \
+                -r "$LINKFINDER_DIR/requirements.txt" 2>/dev/null || true
+        fi
+        if [ -x "$LINKFINDER_DIR/venv/bin/python" ] && \
+           "$LINKFINDER_DIR/venv/bin/python" -c 'import jsbeautifier' 2>/dev/null; then
+            echo "[+] LinkFinder: installed (${LINKFINDER_DIR})"
+        else
+            echo "[!] LinkFinder: install FAILED — Step 15 LinkFinder slices will skip"
+        fi
     fi
 fi
 

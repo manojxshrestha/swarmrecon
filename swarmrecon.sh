@@ -681,9 +681,11 @@ step_vhost_ffuf() {
         # pass A: all status codes except baseline size/invalid Host
         ffuf -w "${wl}:FUZZ" -u "http://${domain}/" -H "Host: FUZZ.${domain}" \
             -H "User-Agent: ${ua}" -fs "$base_cl" -fc 400 -mc all \
+            -rate 20 -t 50 \
             -of json -o "$sdir/vhost-mc-all.json" \
         && ffuf -w "${wl}:FUZZ" -u "http://${domain}/" -H "Host: FUZZ.${domain}" \
             -H "User-Agent: ${ua}" -fs "$base_cl" -fc 400,403 \
+            -rate 20 -t 50 \
             -of json -o "$sdir/vhost-no403.json"
     } >>"$LOG" 2>&1; then
         local n1=0 n2=0
@@ -1404,13 +1406,14 @@ step_highvalue() {
     local -a t_files=()
     for t in "${targets[@]}"; do
         t_json="$sdir/high-value-$(printf '%s' "$t" | sed 's|^[a-zA-Z]*://||; s|[^A-Za-z0-9._-]|_|g').json"
-        cmd "ffuf -w high-value-paths.txt -u ${t%/}/FUZZ -mc 200,301,302,401,403,500 -ac -rate 5"
+        cmd "ffuf -w high-value-paths.txt -u ${t%/}/FUZZ -mc 200,301,302,401,403,500 -ac -rate 20 -t 50"
         ffuf \
             -w "$wl" \
             -u "${t%/}/FUZZ" \
             -mc 200,301,302,401,403,500 \
             -ac \
-            -rate 5 \
+            -rate 20 \
+            -t 50 \
             -o "$t_json" \
             -of json >>"$LOG" 2>&1 || warn "ffuf exited nonzero for $t (network?) — see ${LOG}"
         if [ -s "$t_json" ]; then

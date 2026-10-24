@@ -1403,14 +1403,14 @@ local wl="$WL_DIR/high-value-paths.txt"
     for t in "${targets[@]}"; do
         echo
         echo "━━━ Target $i/${#targets[@]}: ${t}"
-        echo "━━━ Command: ffuf -w high-value-paths.txt -u ${t%/}/FUZZ -mc 200,301,302,401,403,500 -ac -rate 20 -t 50"
+        echo "━━━ Command: ffuf -w high-value-paths.txt -u ${t%/}/FUZZ -mc 200,301,302,401,403 -ac -rate 20 -t 50"
         echo
         t_json="$sdir/high-value-$(printf '%s' "$t" | sed 's|^[a-zA-Z]*://||; s|[^A-Za-z0-9._-]|_|g').json"
-        cmd "ffuf -w high-value-paths.txt -u ${t%/}/FUZZ -mc 200,301,302,401,403,500 -ac -rate 20 -t 50"
+        cmd "ffuf -w high-value-paths.txt -u ${t%/}/FUZZ -mc 200,301,302,401,403 -ac -rate 20 -t 50"
         ffuf \
             -w "$wl" \
             -u "${t%/}/FUZZ" \
-            -mc 200,301,302,401,403,500 \
+            -mc 200,301,302,401,403 \
             -ac \
             -rate 20 \
             -t 50 \

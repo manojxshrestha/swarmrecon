@@ -1354,8 +1354,7 @@ step_highvalue() {
     local sdir_rel="$OUTDIR/14-high-value"
     mkdir -p "$sdir_rel"
     local sdir; sdir="$(cd "$sdir_rel" && pwd)"
-    local wl_raw="$WL_DIR/high-value-paths.txt"
-    local wl="$sdir/high-value-paths.clean.txt"
+local wl="$WL_DIR/high-value-paths.txt"
     local targets=("https://${DOMAIN}")
 
     # fresh run: drop previous results so a skipped/failed rerun can't show stale hits
@@ -1371,8 +1370,8 @@ step_highvalue() {
         warn "Step 14 SKIPPED: ffuf not found (run ./install.sh)"
         miss=1
     fi
-    if [ ! -s "$wl_raw" ]; then
-        warn "Step 14 SKIPPED: ${wl_raw} missing (ships with repo — check wordlists/)"
+    if [ ! -s "$wl" ]; then
+        warn "Step 14 SKIPPED: wordlist missing (check wordlists/)"
         miss=1
     fi
     if [ "$miss" -ne 0 ]; then
@@ -1380,20 +1379,7 @@ step_highvalue() {
         return 0
     fi
 
-    # high-value-paths.txt is written with leading '/' and section comments.
-    # ffuf appends FUZZ to the URL, so '/' would create '//.env'; strip the
-    # slash, drop comments/blank lines, and deduplicate before fuzzing.
-    awk '
-        { sub(/\r$/, ""); sub(/^[[:space:]]+/, ""); sub(/[[:space:]]+$/, "") }
-        $0 == "" || /^#/ { next }
-        { sub(/^\/+/, ""); if ($0 != "") print }
-    ' "$wl_raw" | sort -u > "$wl"
-    if [ ! -s "$wl" ]; then
-        warn "Step 14 SKIPPED: ${wl_raw} has no usable paths"
-        note_result "skip" "14 · High-value" "wordlist has no usable paths"
-        return 0
-    fi
-    info "high-value wordlist: $(wc -l < "$wl" | tr -d ' ') paths (sanitized)"
+    info "high-value wordlist: $(wc -l < "$wl" | tr -d ' ') paths"
 
     # sources: apex (above) + every host in step-7's alive-domains.txt
     local adoms="$OUTDIR/alive-domains.txt"

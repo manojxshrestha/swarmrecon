@@ -1478,11 +1478,11 @@ step_js() {
     local t0; t0=$(now_s)
     local sdir="$OUTDIR/js_files"
     local check_dir="$OUTDIR/check"
-    local js_links="$SWARM_DIR/js-scripts/js-links.sh"
-    local downloader="$SWARM_DIR/js-scripts/downloadjs.py"
-    local analyzer="$SWARM_DIR/js-scripts/analyzejs.py"
-    local lf_wrapper="$SWARM_DIR/js-scripts/linkfinder.sh"
-    local resolver="$SWARM_DIR/js-scripts/js-endpoints.py"
+    local js_links="$SWARM_DIR/js-scripts/js-scripts/js-links.sh"
+    local downloader="$SWARM_DIR/js-scripts/js-scripts/downloadjs.py"
+    local analyzer="$SWARM_DIR/js-scripts/js-scripts/analyzejs.py"
+    local lf_wrapper="$SWARM_DIR/js-scripts/js-scripts/linkfinder.sh"
+    local resolver="$SWARM_DIR/js-scripts/js-scripts/js-endpoints.py"
 
     if [ "${SWARMRECON_JS:-1}" = "0" ]; then
         warn "Step 15 SKIPPED: SWARMRECON_JS=0"
@@ -1495,8 +1495,8 @@ step_js() {
         return 0
     fi
     if [ ! -f "$js_links" ] || [ ! -f "$downloader" ]; then
-        warn "Step 15 SKIPPED: js-links.sh or downloadjs.py missing"
-        note_result "skip" "15 · JavaScript" "js-links.sh/downloadjs.py missing"
+        warn "Step 15 SKIPPED: js-scripts/js-links.sh or js-scripts/downloadjs.py missing"
+        note_result "skip" "15 · JavaScript" "js-scripts/js-links.sh/js-scripts/downloadjs.py missing"
         return 0
     fi
 
@@ -1506,14 +1506,14 @@ step_js() {
     rm -rf -- "$sdir"
     mkdir -p "$sdir/files" "$OUTDIR/urls" "$check_dir"
 
-    cmd "js-links.sh --domain ${DOMAIN} --input check/crawledurls.txt"
+    cmd "js-scripts/js-links.sh --domain ${DOMAIN} --input check/crawledurls.txt"
     if ! ( cd "$OUTDIR" && bash "$js_links" \
             --domain "$DOMAIN" \
             --input check/crawledurls.txt \
             --output check/livejslinks.txt \
             --dropped check/livejslinks-dropped.txt ) >>"$LOG" 2>&1; then
-        err "js-links.sh failed — see ${LOG}"
-        note_result "fail" "15 · JavaScript" "js-links.sh failed — see recon.log"
+        err "js-scripts/js-links.sh failed — see ${LOG}"
+        note_result "fail" "15 · JavaScript" "js-scripts/js-links.sh failed — see recon.log"
         return 0
     fi
 
@@ -1583,13 +1583,13 @@ PY
         return 0
     fi
 
-    cmd "downloadjs.py --input check/livejslinks.txt --scope-file js_files/scope.txt --out js_files"
+    cmd "js-scripts/downloadjs.py --input check/livejslinks.txt --scope-file js_files/scope.txt --out js_files"
     if ! ( cd "$OUTDIR" && python3 "$downloader" \
             --input check/livejslinks.txt \
             --scope-file js_files/scope.txt \
             --out js_files ) >>"$LOG" 2>&1; then
-        err "downloadjs.py failed — see ${LOG}"
-        note_result "fail" "15 · JavaScript" "downloadjs.py failed — see recon.log"
+        err "js-scripts/downloadjs.py failed — see ${LOG}"
+        note_result "fail" "15 · JavaScript" "js-scripts/downloadjs.py failed — see recon.log"
         return 0
     fi
 
@@ -1651,7 +1651,7 @@ PY
     fi
 
     if [ -f "$analyzer" ]; then
-        cmd "analyzejs.py --input js_files --manifest js_files/manifest.tsv"
+        cmd "js-scripts/analyzejs.py --input js_files --manifest js_files/manifest.tsv"
         if ( cd "$OUTDIR" && python3 "$analyzer" \
                 --input js_files \
                 --manifest js_files/manifest.tsv \
@@ -1659,10 +1659,10 @@ PY
                 --out js_files/analysis.md ) >>"$LOG" 2>&1; then
             ok "js_files/analysis.md written"
         else
-            warn "analyzejs.py failed — see ${LOG}"
+            warn "js-scripts/analyzejs.py failed — see ${LOG}"
         fi
     else
-        warn "analyzejs.py missing — offline JS analysis skipped"
+        warn "js-scripts/analyzejs.py missing — offline JS analysis skipped"
     fi
 
     local lf_home="${LINKFINDER_HOME:-$HOME/LinkFinder}"
@@ -1673,7 +1673,7 @@ PY
     fi
 
     if [ "$lf_available" -eq 1 ] && [ -f "$lf_wrapper" ]; then
-        cmd "linkfinder.sh -i js_files/files --raw-out js_files/linkfinder.raw.txt"
+        cmd "js-scripts/linkfinder.sh -i js_files/files --raw-out js_files/linkfinder.raw.txt"
         if ( cd "$OUTDIR" && bash "$lf_wrapper" \
                 -i js_files/files \
                 --raw-out js_files/linkfinder.raw.txt ) > "$sdir/linkfinder.txt" 2>>"$LOG"; then
@@ -1681,24 +1681,24 @@ PY
             nlf=$(grep -c . "$sdir/linkfinder.txt" 2>/dev/null || true)
             ok "js_files/linkfinder.txt → ${nlf:-0} endpoint(s)"
         else
-            warn "linkfinder.sh failed — see ${LOG}"
+            warn "js-scripts/linkfinder.sh failed — see ${LOG}"
         fi
     else
         warn "LinkFinder not installed at ${lf_home} — LinkFinder endpoints skipped"
     fi
 
     if [ "$lf_available" -eq 1 ] && [ -f "$resolver" ]; then
-        cmd "js-endpoints.py --input js_files --manifest js_files/manifest.tsv"
+        cmd "js-scripts/js-endpoints.py --input js_files --manifest js_files/manifest.tsv"
         if ( cd "$OUTDIR" && python3 "$resolver" \
                 --input js_files \
                 --manifest js_files/manifest.tsv \
                 --scope-file js_files/scope.txt ) >>"$LOG" 2>&1; then
             ok "check/js-endpoints.txt + check/js-endpoints-absolute.txt written"
         else
-            warn "js-endpoints.py failed — see ${LOG}"
+            warn "js-scripts/js-endpoints.py failed — see ${LOG}"
         fi
     elif [ ! -f "$resolver" ]; then
-        warn "js-endpoints.py missing — endpoint resolution skipped"
+        warn "js-scripts/js-endpoints.py missing — endpoint resolution skipped"
     fi
 
     local n_abs=0

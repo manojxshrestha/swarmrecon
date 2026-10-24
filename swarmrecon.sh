@@ -677,13 +677,22 @@ step_vhost_ffuf() {
     # --- ffuf passes (absolute wordlist + -o json; browser UA avoids WAF 403) ---
     # '&&' so pass A failure aborts instead of reporting pass B alone as ok
     cmd "ffuf -w common.txt:FUZZ -u http://${domain}/ -H 'Host: FUZZ.${domain}' -fs ${base_cl}   (2 passes: -mc all, then -fc 400,403)"
+    echo
+    echo "━━━ Vhost Fuzzing Pass A: -mc all (all status codes except baseline)"
+    echo "━━━ Command: ffuf -w ${wl}:FUZZ -u http://${domain}/ -H 'Host: FUZZ.${domain}' -H 'User-Agent: ${ua}' -fs ${base_cl} -fc 400 -mc all -rate 20 -t 50"
+    echo
     if {
         # pass A: all status codes except baseline size/invalid Host
         ffuf -w "${wl}:FUZZ" -u "http://${domain}/" -H "Host: FUZZ.${domain}" \
             -H "User-Agent: ${ua}" -fs "$base_cl" -fc 400 -mc all \
             -rate 20 -t 50 \
             -of json -o "$sdir/vhost-mc-all.json" \
-        && ffuf -w "${wl}:FUZZ" -u "http://${domain}/" -H "Host: FUZZ.${domain}" \
+        && echo
+        echo "━━━ Vhost Fuzzing Pass B: -fc 400,403 (exclude 400/403)"
+        echo "━━━ Command: ffuf -w ${wl}:FUZZ -u http://${domain}/ -H 'Host: FUZZ.${domain}' -H 'User-Agent: ${ua}' -fs ${base_cl} -fc 400,403 -rate 20 -t 50"
+        echo
+        # pass B: exclude 400/403
+        ffuf -w "${wl}:FUZZ" -u "http://${domain}/" -H "Host: FUZZ.${domain}" \
             -H "User-Agent: ${ua}" -fs "$base_cl" -fc 400,403 \
             -rate 20 -t 50 \
             -of json -o "$sdir/vhost-no403.json"
@@ -1401,10 +1410,15 @@ step_highvalue() {
         warn "alive-domains.txt missing/empty — step 14 covers apex only"
     fi
 
-    info "ffuf -w high-value-paths.txt — ${#targets[@]} target(s): ${targets[*]}"
+    info "ffuf -w high-value-paths.txt — ${#targets[@]} target(s)"
     local t t_json
     local -a t_files=()
+    local i=1
     for t in "${targets[@]}"; do
+        echo
+        echo "━━━ Target $i/${#targets[@]}: ${t}"
+        echo "━━━ Command: ffuf -w high-value-paths.txt -u ${t%/}/FUZZ -mc 200,301,302,401,403,500 -ac -rate 20 -t 50"
+        echo
         t_json="$sdir/high-value-$(printf '%s' "$t" | sed 's|^[a-zA-Z]*://||; s|[^A-Za-z0-9._-]|_|g').json"
         cmd "ffuf -w high-value-paths.txt -u ${t%/}/FUZZ -mc 200,301,302,401,403,500 -ac -rate 20 -t 50"
         ffuf \
@@ -1421,6 +1435,7 @@ step_highvalue() {
         else
             warn "no results file for $t"
         fi
+        ((i++))
     done
 
     # merge per-host results into the contract pair (results.json/.txt)

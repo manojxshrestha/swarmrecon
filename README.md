@@ -282,9 +282,9 @@ These are the only two parts of the playbook that are **not** run by
 | 10 | Zone transfer (AXFR) | `nslookup`, `dig axfr` per NS | `10-zone-transfer/` — `nslookup-NS.txt`, `axfr-<ns>.txt` |
 | 11 | **DIRECTORY BRUTEFORCE — MANUAL** | *not run by pipeline* | run `./bruteforce/dir-bruteforce.sh` (interactive prompts: target URL → wordlist path) → `directories/<host>/` |
 | 12 | Public files | `curl` | `12-robots-sitemap/` — `robots.txt`, `security.txt`, 7 sitemap path variants (sitemap URLs forwarded as crawl seeds) |
-| 13 | Web crawling (10 sub-steps) | merge + `waymore`, `gau`, `uro`, `anew`, `hakrawler`, `katana`, `gospider`, `dnsx`, `httpx`, `extracturls.sh`, `filter.sh`, `gf` | root crawl files + `gooutput/` + `check/` (+ `check/gf/`); starts by merging Step 4/8/9/12 candidates into the root lists |
+| 13 | Web crawling (10 sub-steps) | merge + `waymore`, `gau`, `uro`, `anew`, `hakrawler`, `katana`, `gospider`, `dnsx`, `httpx`, `url-tools/extracturls.sh`, `url-tools/filter.sh`, `gf` | root crawl files + `gooutput/` + `check/` (+ `check/gf/`); starts by merging Step 4/8/9/12 candidates into the root lists |
 | 14 | High-value paths | `ffuf` (auto-calibrated) — sources: `https://<domain>` + each host in `alive-domains.txt` (including the merged Step 4/8/9/12 candidates) | `14-high-value/` — `high-value-results.json` (merged), `high-value-results.txt`, `high-value-<host>.json` |
-| 15 | JavaScript collection + endpoints | `js-links.sh`, `downloadjs.py`, `analyzejs.py`, `linkfinder.sh`, `js-endpoints.py` | `check/livejslinks.txt`, `check/js-endpoints*.txt`, `js_files/` (files, manifest, analysis, LinkFinder), `urls/js-files*.txt` |
+| 15 | JavaScript collection + endpoints | `js-scripts/js-links.sh`, `js-scripts/downloadjs.py`, `js-scripts/analyzejs.py`, `js-scripts/linkfinder.sh`, `js-scripts/js-endpoints.py` | `check/livejslinks.txt`, `check/js-endpoints*.txt`, `js_files/` (files, manifest, analysis, LinkFinder), `urls/js-files*.txt` |
 
 > **Merge hand-off:** before Step 13 and again before Step 14, `merge/merge-sources.sh` folds the Step 4/8/9/12 candidates into `recon/<domain>/merge/merged-alive-domains.txt` and `merged-https-subs.txt`, appends them to the root `alive-domains.txt` / `https-subs.txt`, then deletes the merged files. See [Source merge for Steps 13/14](#source-merge).
 
@@ -308,7 +308,7 @@ check/crawledurls.txt
   → urls/js-files-local.txt        # local paths for scanners
 ```
 
-- `js-links.sh` parses URL paths (not `grep "\.js"`), strips fragments, keeps
+- `js-scripts/js-links.sh` parses URL paths (not `grep "\.js"`), strips fragments, keeps
   `.js`/`.mjs`/`.cjs`, and drops `.json`/`.jsp`/`.jsx`/`.map` and
   `cdn-cgi/challenge-platform`.
 - The downloader filters against `js_files/scope.txt` **before** any request,
@@ -321,7 +321,7 @@ check/crawledurls.txt
   `check/js-endpoints-absolute.txt` for later testing.
 - `check/crawledurls.txt` is already live-filtered by Step 13, so Step 15 does
   **not** probe. It only filters paths into `check/livejslinks.txt`, then
-  downloads that list. The optional `js-links.sh --probe` exists only for a
+  downloads that list. The optional `js-scripts/js-links.sh --probe` exists only for a
   raw `merged-crawl.txt` fallback; the pipeline never uses it.
 
 > [!IMPORTANT]
@@ -398,9 +398,9 @@ Run it standalone when you want the two lists without starting a crawl:
 4. `cat https-subs.txt | hakrawler -subs -u -d 3 > hakcrawlurls.txt` → root `hakcrawlurls.txt`
 5. `cat https-subs.txt | katana -d 3 -jc -timeout 15 -c 20 | anew cleansubskatanaurls.txt` (no `anew` → plain `> cleansubskatanaurls.txt`) → root `cleansubskatanaurls.txt`. The crawl stops as soon as the file reaches **1,000,000 URLs** (`KATANA_URL_CAP=<n>` overrides it; `0` disables the cap) and the pipeline continues with gospider; `anew`'s stdout is discarded so URLs are **not** duplicated into `recon.log`
 6. `gospider -S https-subs.txt -o gooutput/ -c 10 -d 3 -t 20` → `gooutput/`
-7. `extracturls.sh -f gooutput/ -d <domain>` (requires `dnsx` + `httpx`) → writes into `gooutput/`, then `alivesubsurls.txt` is **moved** to root
+7. `url-tools/extracturls.sh -f gooutput/ -d <domain>` (requires `dnsx` + `httpx`) → writes into `gooutput/`, then `alivesubsurls.txt` is **moved** to root
 8. `cat waygauurls.txt cleansubskatanaurls.txt hakcrawlurls.txt alivesubsurls.txt | uro > merged-crawl.txt` (missing inputs skipped with a warning; no `uro` → `sort -u`) → root **`merged-crawl.txt`**
-9. `cd recon/<domain> && echo <domain> | ../../filter.sh` (liveness + param/API/IDOR classification; cwd must be the recon dir so its default input `merged-crawl.txt` resolves) → `check/`
+9. `cd recon/<domain> && echo <domain> | ../../url-tools/filter.sh` (liveness + param/API/IDOR classification; cwd must be the recon dir so its default input `merged-crawl.txt` resolves) → `check/`
 10. `cd recon/<domain> && ../../gf-scripts/gf-extract.sh check/param-urls.txt check/gf` → `check/gf/gf-*.txt`
 
 ---
@@ -683,7 +683,7 @@ flowchart TD
         direction LR
         S11["11 · Directory bruteforce<br/>MANUAL — pipeline skip<br/>./bruteforce/dir-bruteforce.sh<br/>→ directories/&lt;host&gt;/"]:::manual --> S12["12 · Robots / sitemap<br/>curl → &lt;loc&gt; + Sitemap:<br/>→ 12-robots-sitemap/"]:::phase
         S12 --> M13["MERGE 4/8/9/12<br/>writes merged-*.txt<br/>append → root lists<br/>delete merged"]:::merge
-        M13 --> S13["13 · Web crawl<br/>waymore · gau · hakrawler<br/>katana · gospider<br/>filter.sh + gf-extract.sh<br/>7 crawl files · check/ · gooutput/"]:::phase
+        M13 --> S13["13 · Web crawl<br/>waymore · gau · hakrawler<br/>katana · gospider<br/>url-tools/filter.sh + gf-extract.sh<br/>7 crawl files · check/ · gooutput/"]:::phase
         S13 --> M14["MERGE AGAIN<br/>idempotent<br/>covers skipped 13"]:::merge
         M14 --> S14["14 · High-value<br/>ffuf secrets · admin · backups<br/>root + alive-domains.txt<br/>→ 14-high-value/"]:::phase
         S14 --> S15["15 · JavaScript<br/>livejslinks → downloadjs<br/>analyzejs · LinkFinder<br/>→ js_files/ + check/js-endpoints*.txt"]:::phase
@@ -707,7 +707,7 @@ flowchart TD
 - **Root = final, numbered dirs = raw.** Only step 7's `https-subs.txt` + `alive-domains.txt`, step 13's seven crawl files, and step 15's `js_files/` + JS check lists are final; `01-…` through `14-high-value/` and `gooutput/` are raw material. `subdomains/` is step-7 staging only — step 7 `rmdir`s it at the end (when empty), so it never lingers. `merge/` is transient too: it exists only between the merge and the append-and-delete step.
 - **No orphaned candidates.** Step 4/8/9/12 outputs are merged into the two root lists at the start of Steps 13 and 14. The merge is scope-filtered, deduped, and rerun-safe, so later steps see the full candidate set without duplicate entries.
 - **Merge process is append-and-delete.** `merge/merge-sources.sh` writes `merge/merged-alive-domains.txt` + `merge/merged-https-subs.txt`; `_append_unique` appends each to its root list with `sort -u`, then deletes the merged source. Step 14 regenerates and re-appends the same candidates, which dedupes to a no-op.
-- **Step 13 never dies wholesale.** Each crawl tool, `filter.sh`, and `gf-scripts/gf-extract.sh` runs as an independent sub-step — one missing tool skips its slice only. `check/` holds the filter classification (`crawledurls` · `param-urls` · `httpx-raw` · `api-candidates` · `idor-candidates` · `api-param-candidates` · `idor-param-candidates`) plus `gf/gf-*.txt` pattern classes; `gooutput/` holds gospider raw + extracturls intermediates.
+- **Step 13 never dies wholesale.** Each crawl tool, `url-tools/filter.sh`, and `gf-scripts/gf-extract.sh` runs as an independent sub-step — one missing tool skips its slice only. `check/` holds the filter classification (`crawledurls` · `param-urls` · `httpx-raw` · `api-candidates` · `idor-candidates` · `api-param-candidates` · `idor-param-candidates`) plus `gf/gf-*.txt` pattern classes; `gooutput/` holds gospider raw + extracturls intermediates.
 - **The manual branch stays manual.** masscan/nmap/brutespray needs interactive `sudo` and an explicit credential-guessing decision, so it's a deliberate side path off step 5 — never automated in the script.
 - **Step 11 stays manual too.** Directory bruteforce is outside the pipeline — the run finishes with a *skip* row and a pointer to `./bruteforce/dir-bruteforce.sh`, which prompts for URL + wordlist and writes `directories/<host>/`. Choosing when (and how hard) to brute-force stays an explicit decision.
 - **Setup is one-time, not per-run.** `./install.sh` is idempotent and `./gf-scripts/sync-gf-patterns.sh` fills `~/.gf` once; re-runs skip what already exists.
@@ -717,23 +717,23 @@ flowchart TD
 ## Helper scripts
 
 Standalone helper scripts: Steps 13/14 invoke `merge/merge-sources.sh`, Step 13
-invokes `extracturls.sh`, `filter.sh`, and `gf-scripts/gf-extract.sh` automatically,
-Step 15 invokes `js-links.sh`, `downloadjs.py`, `analyzejs.py`, `linkfinder.sh`,
-and `js-endpoints.py`, `install.sh` runs `gf-scripts/sync-gf-patterns.sh`, while
+invokes `url-tools/extracturls.sh`, `url-tools/filter.sh`, and `gf-scripts/gf-extract.sh` automatically,
+Step 15 invokes `js-scripts/js-links.sh`, `js-scripts/downloadjs.py`, `js-scripts/analyzejs.py`, `js-scripts/linkfinder.sh`,
+and `js-scripts/js-endpoints.py`, `install.sh` runs `gf-scripts/sync-gf-patterns.sh`, while
 `bruteforce/dir-bruteforce.sh` and `portscan/portscan.sh` run only when you
 invoke them (steps 11 and the post-Step-5 port workflow are manual):
 
 | Script | Usage | Notes |
 |--------|-------|-------|
-| `extracturls.sh` | `./extracturls.sh -f <gospider_folder> -d <domain>` | Extracts + liveness-probes subdomains from crawler output. Requires `dnsx` + `httpx`. |
-| `filter.sh` | `echo <domain> \| ./filter.sh [input]` | Interactive domain prompt (fed via stdin). Defaults to `merged-crawl.txt` in CWD; writes 7 files to `check/` (6 classification + `httpx-raw`). Keeps WAF/403/401 alive, drops 404s/errors; strips fragments + tracking params; classifies API/IDOR candidates. |
+| `url-tools/extracturls.sh` | `./url-tools/extracturls.sh -f <gospider_folder> -d <domain>` | Extracts + liveness-probes subdomains from crawler output. Requires `dnsx` + `httpx`. |
+| `url-tools/filter.sh` | `echo <domain> \| ./url-tools/filter.sh [input]` | Interactive domain prompt (fed via stdin). Defaults to `merged-crawl.txt` in CWD; writes 7 files to `check/` (6 classification + `httpx-raw`). Keeps WAF/403/401 alive, drops 404s/errors; strips fragments + tracking params; classifies API/IDOR candidates. |
 | `gf-scripts/gf-extract.sh` | `./gf-scripts/gf-extract.sh [input_file] [out_dir]` | Defaults: `check/param-urls.txt` → `check/gf/`. `$1` must be a **file** (not a directory). Only patterns with hits produce files; patterns whose `_` → `-` sanitized names collide are skipped with a warning. |
 | `merge/merge-sources.sh` | `./merge/merge-sources.sh -d <domain> [-o <outdir>]` | Builds `merge/merged-alive-domains.txt` + `merge/merged-https-subs.txt` from Step 4/8/9/12 outputs. Called automatically at the start of Steps 13 and 14; safe to run standalone. |
-| `js-links.sh` | `./js-links.sh [-i check/crawledurls.txt] [--domain <host>] [--scope-file <file>]` | Builds `check/livejslinks.txt` by parsing already-live URL paths; keeps `.js/.mjs/.cjs`, drops non-JS/extensions/challenges, strips fragments, dedupes. Sends no requests. `--probe` is only for the raw `merged-crawl.txt` fallback. |
-| `downloadjs.py` | `python3 downloadjs.py [--input <file>] [--scope-file <file>] [--out js_files]` | Scope-filtered downloader: cross-host/HTTPS→HTTP redirects blocked, 10 MiB cap, HTML/challenge rejection, manifest + SHA-256. |
-| `analyzejs.py` | `python3 analyzejs.py --input js_files --manifest js_files/manifest.tsv --scope-file js_files/scope.txt` | Offline, redacted static lead report (`analysis.md`); no network. |
-| `linkfinder.sh` | `./linkfinder.sh -i <file\|dir> [--raw-out <file>]` | Local files only; rejects URLs and `-d`; forces `-o cli`; filters namespace noise. Directory scan is top-level `*.js`. |
-| `js-endpoints.py` | `python3 js-endpoints.py --input js_files --manifest js_files/manifest.tsv --scope-file js_files/scope.txt` | Per-file LinkFinder, resolves relative/scheme-relative endpoints, writes `linkfinder.tsv` + raw/in-scope check lists. |
+| `js-scripts/js-links.sh` | `./js-scripts/js-links.sh [-i check/crawledurls.txt] [--domain <host>] [--scope-file <file>]` | Builds `check/livejslinks.txt` by parsing already-live URL paths; keeps `.js/.mjs/.cjs`, drops non-JS/extensions/challenges, strips fragments, dedupes. Sends no requests. `--probe` is only for the raw `merged-crawl.txt` fallback. |
+| `js-scripts/downloadjs.py` | `python3 js-scripts/downloadjs.py [--input <file>] [--scope-file <file>] [--out js_files]` | Scope-filtered downloader: cross-host/HTTPS→HTTP redirects blocked, 10 MiB cap, HTML/challenge rejection, manifest + SHA-256. |
+| `js-scripts/analyzejs.py` | `python3 js-scripts/analyzejs.py --input js_files --manifest js_files/manifest.tsv --scope-file js_files/scope.txt` | Offline, redacted static lead report (`analysis.md`); no network. |
+| `js-scripts/linkfinder.sh` | `./js-scripts/linkfinder.sh -i <file\|dir> [--raw-out <file>]` | Local files only; rejects URLs and `-d`; forces `-o cli`; filters namespace noise. Directory scan is top-level `*.js`. |
+| `js-scripts/js-endpoints.py` | `python3 js-scripts/js-endpoints.py --input js_files --manifest js_files/manifest.tsv --scope-file js_files/scope.txt` | Per-file LinkFinder, resolves relative/scheme-relative endpoints, writes `linkfinder.tsv` + raw/in-scope check lists. |
 | `gf-scripts/sync-gf-patterns.sh` | `./gf-scripts/sync-gf-patterns.sh` | Copies `gf-patterns/*.json` → `~/.gf` (skips identical, index excluded, prunes **only this repo's** previously-synced files — ownership-aware for shared `~/.gf`). Called by `install.sh`; run standalone after editing patterns. |
 | `bruteforce/dir-bruteforce.sh` | `./bruteforce/dir-bruteforce.sh` (interactive) · `./bruteforce/dir-bruteforce.sh --url <url> --wordlist <path>` | ffuf path discovery — **never auto-run** by the pipeline (step 11 = *skip*). Interactive mode shows a numbered wordlist menu (`Enter` = `common.txt`, or number/name/path); `--list-wordlists` prints it without scanning. Profiles `--profile light\|standard\|deep` + `--ext-profile`, plus `--plan <scan.json>`, `--dry-run`, `--force`, `--report-only`, `--target <domain>` (merges hosts under `directories/<domain>/`; `--fresh-aggregate` truncates it first). Output: `directories/<host>/` (evidence + reports). |
 | `dashboard.py` | `./dashboard.py` · `./dashboard.py -d <domain>` | Read-only localhost dashboard (`http://127.0.0.1:8787`). No `-d` → follows the running `swarmrecon.sh` target, else newest `recon/` dir. Shows step status, running tools, artifact counts, disk, live log tail (marks buffered/silent steps); safe alongside a scan, `--once` prints a snapshot. |

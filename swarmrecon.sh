@@ -189,6 +189,17 @@ note_result() { SUMMARY+=("$1|$2|$3"); }
 
 now_s() { date +%s; }
 
+# hard runtime cap for external modules that have no internal timeouts
+# (timeout(1) when available, plain exec otherwise)
+run_limited() {  # $1 = seconds, rest = argv
+    local secs="$1"; shift
+    if command -v timeout >/dev/null 2>&1; then
+        timeout --kill-after=10 "$secs" "$@"
+    else
+        "$@"
+    fi
+}
+
 # ---- venv helpers (ported from openswarm scripts/tools/_env.sh) ----
 # resolve a venv activate script: venv/ first, then .venv/ (uv default).
 # ALWAYS exits 0 — prints empty string when no venv exists.
@@ -1721,6 +1732,7 @@ step_intel() {
     local domain="$DOMAIN"
     local tools_dir="$HOME/.local/bin"
     local ran=0 skipped=0
+    local ran_mods=() skip_mods=()
 
     local act_msft act_scop act_spoof act_cloud
     act_msft="$(venv_activate "$tools_dir/msftrecon")"
@@ -1749,39 +1761,67 @@ step_intel() {
         whois "$domain" >"$whois_out" 2>>"$LOG" || true
         if [ -s "$whois_out" ]; then
             cat "$whois_out" >> "$sdir/domain_info_general.txt"
-            ran=$((ran + 1))
+            ran=$((ran + 1)); ran_mods+=("whois")
         else
             warn "whois returned nothing for ${domain}"
-            skipped=$((skipped + 1))
+            skipped=$((skipped + 1)); skip_mods+=("whois")
         fi
         rm -f "$whois_out"
     else
         warn "whois not installed — skipped"
-        skipped=$((skipped + 1))
+        skipped=$((skipped + 1)); skip_mods+=("whois")
     fi
 
     # --- msftrecon (appends to domain_info_general + azure tenant grep) ---
+    # msftrecon makes ~35 SEQUENTIAL https calls and never passes timeout= to
+    # urlopen() nor sets socket.setdefaulttimeout(), so one connect/TLS
+    # handshake that stalls blocks forever (observed: 2h04m inside
+    # ssl.do_handshake at get_tenant_id). Two guards, because either alone is
+    # insufficient:
+    #   * socket.setdefaulttimeout() in the launcher → per-request ceiling
+    #   * run_limited() around the module            → whole-module ceiling
     local msft_script="$tools_dir/msftrecon/msftrecon/msftrecon.py"
+    local intel_cap="${SWARM_INTEL_TIMEOUT:-180}"
     if [ -f "$msft_script" ] && [ -n "$act_msft" ]; then
-        local msft_out="$sdir/.msftrecon.tmp"
-        cmd "python3 msftrecon.py -d ${domain}   (venv: ~/.local/bin/msftrecon)"
+        local msft_out="$sdir/.msftrecon.tmp" msft_rc=0
+        cmd "python3 msftrecon.py -d ${domain}   (15s/request · ${intel_cap}s cap · venv: ~/.local/bin/msftrecon)"
         (
             repair_venv_python "$act_msft"
             source "$act_msft"
-            python3 "$msft_script" -d "$domain"
-        ) >"$msft_out" 2>&1 || true
+            run_limited "$intel_cap" python3 -u - "$msft_script" "$domain" <<'PY'
+import runpy, socket, sys
+socket.setdefaulttimeout(15)  # urlopen(..., timeout=socket._GLOBAL_DEFAULT_TIMEOUT) honours this
+script, domain = sys.argv[1], sys.argv[2]
+sys.argv = [script, "-d", domain]
+runpy.run_path(script, run_name="__main__")
+PY
+        ) >"$msft_out" 2>&1 || msft_rc=$?
+        if [ "$msft_rc" -eq 124 ]; then
+            warn "msftrecon hit the ${intel_cap}s cap — partial output kept"
+        fi
         if [ -s "$msft_out" ]; then
             cat "$msft_out" >> "$sdir/domain_info_general.txt"
-            grep -iE 'microsoft|azure|tenant' "$msft_out" > "$sdir/azure_tenant_domains.txt" 2>/dev/null || true
-            ran=$((ran + 1))
+            # tenant domains only: the "[+] Domains found:" block plus any
+            # onmicrosoft.com / partner.onmschina.cn names. The previous
+            # `grep -iE 'microsoft|azure|tenant'` matched section headers and
+            # URLs, so the file held no domains at all.
+            {
+                awk '
+                    /^\[\+\] Domains found:/ { f=1; next }
+                    f && /^\[/ { f=0 }
+                    f && NF   { gsub(/^[[:space:]]+|[[:space:]]+$/, ""); print }
+                ' "$msft_out"
+                grep -oiE '[A-Za-z0-9-]+\.(onmicrosoft\.com|onmschina\.cn|onmicrosoft\.us)' "$msft_out" || true
+            } | awk 'NF && !seen[tolower($0)]++' > "$sdir/azure_tenant_domains.txt"
+            ran=$((ran + 1)); ran_mods+=("msftrecon")
         else
             warn "msftrecon produced no output"
-            skipped=$((skipped + 1))
+            skipped=$((skipped + 1)); skip_mods+=("msftrecon")
         fi
         rm -f "$msft_out"
     else
         warn "msftrecon missing — skipped (./install.sh)"
-        skipped=$((skipped + 1))
+        skipped=$((skipped + 1)); skip_mods+=("msftrecon")
     fi
 
     # --- Scopify (needs unfurl for the company name) ---
@@ -1790,7 +1830,7 @@ step_intel() {
         if command -v unfurl >/dev/null 2>&1; then
             local company
             company="$(unfurl format %r <<< "$domain" 2>/dev/null || printf '%s' "$domain")"
-            cmd "python3 scopify.py -c ${company}   (cwd: 03-intel)"
+            cmd "python3 scopify.py -c ${company}"
             (
                 repair_venv_python "$act_scop"
                 source "$act_scop"
@@ -1803,22 +1843,22 @@ step_intel() {
             # don't count its error text as a successful module.
             if [ -s "$sdir/scopify.txt" ] \
                 && ! grep -qiE '^[[:space:]]*Error:|Could not find page' "$sdir/scopify.txt"; then
-                ran=$((ran + 1))
+                ran=$((ran + 1)); ran_mods+=("Scopify")
             else
                 if grep -qiE '^[[:space:]]*Error:|Could not find page' "$sdir/scopify.txt"; then
                     warn "Scopify failed: $(grep -m1 -iE 'Error:|Could not find page' "$sdir/scopify.txt")"
                 else
                     warn "Scopify produced no output"
                 fi
-                skipped=$((skipped + 1))
+                skipped=$((skipped + 1)); skip_mods+=("Scopify")
             fi
         else
             warn "unfurl not installed — Scopify skipped"
-            skipped=$((skipped + 1))
+            skipped=$((skipped + 1)); skip_mods+=("Scopify")
         fi
     else
         warn "Scopify missing — skipped (./install.sh)"
-        skipped=$((skipped + 1))
+        skipped=$((skipped + 1)); skip_mods+=("Scopify")
     fi
 
     # --- Spoofy (SPF / DMARC / DKIM analysis) ---
@@ -1832,14 +1872,14 @@ step_intel() {
             python3 "$spoof_script" -d "$domain"
         ) >"$sdir/spoof.txt" 2>&1 || true
         if [ -s "$sdir/spoof.txt" ]; then
-            ran=$((ran + 1))
+            ran=$((ran + 1)); ran_mods+=("Spoofy")
         else
             warn "Spoofy produced no output"
-            skipped=$((skipped + 1))
+            skipped=$((skipped + 1)); skip_mods+=("Spoofy")
         fi
     else
         warn "Spoofy missing — skipped (./install.sh)"
-        skipped=$((skipped + 1))
+        skipped=$((skipped + 1)); skip_mods+=("Spoofy")
     fi
 
     # --- cloud_enum (AWS / Azure / GCP resource hunt) ---
@@ -1874,22 +1914,32 @@ step_intel() {
         fi
         rm -f "$ce_tmp"
         if [ -s "$sdir/cloud_enum.txt" ]; then
-            ran=$((ran + 1))
+            ran=$((ran + 1)); ran_mods+=("cloud_enum")
         else
             info "cloud_enum: no cloud resources found"
-            ran=$((ran + 1))
+            ran=$((ran + 1)); ran_mods+=("cloud_enum")
         fi
     else
         warn "cloud_enum missing — skipped (./install.sh)"
-        skipped=$((skipped + 1))
+        skipped=$((skipped + 1)); skip_mods+=("cloud_enum")
     fi
 
     local elapsed=$(( $(now_s) - t0 ))
+    local mods="" m
+    for m in "${ran_mods[@]:-}"; do
+        if [ -n "$m" ]; then
+            mods="${mods:+$mods · }$m"
+        fi
+    done
     if [ "$ran" -gt 0 ]; then
-        ok "03-intel/ · ${ran} module(s) produced output · ${skipped} skipped (${elapsed}s)"
+        local tail_txt=""
+        if [ "$skipped" -gt 0 ]; then
+            tail_txt=" · ${skipped} skipped"
+        fi
+        ok "done in ${elapsed}s → 03-intel/ (${mods})${tail_txt}"
         note_result "ok" "3 · Intel" "03-intel/ · ${ran} ok / ${skipped} skipped"
     elif [ "$skipped" -gt 0 ]; then
-        warn "03-intel/ · all modules skipped or empty — see recon.log"
+        warn "done in ${elapsed}s → 03-intel/ (nothing produced · ${skipped} skipped) — see recon.log"
         note_result "skip" "3 · Intel" "tools missing/empty — run ./install.sh"
     else
         err "03-intel/ failed — see recon.log"

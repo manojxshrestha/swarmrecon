@@ -79,7 +79,8 @@ structure. `swarmrecon.sh` encodes that whole playbook:
 
 ```bash
 # 1. Clone & enter
-git clone https://github.com/manojxshrestha/swarmrecon.git && cd swarmrecon
+git clone https://github.com/manojxshrestha/swarmrecon.git
+cd swarmrecon
 
 # 2. Install deps (wappalyzer + chromium, ctfr, unfurl, puredns + massdns,
 #    subenum, PD httpx + dnsx, gau/uro/gf/katana/gospider/hakrawler, waymore,

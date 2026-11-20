@@ -1370,14 +1370,13 @@ step_highvalue() {
 local wl="$WL_DIR/high-value-paths.txt"
     local targets=("https://${DOMAIN}")
 
-    # fresh run: drop previous results so a skipped/failed rerun can't show stale hits
-    rm -f "$sdir"/high-value-*.json "$sdir/high-value-results.txt"
-
     # Step 14 half of the append-and-delete flow. Step 13 normally already
     # appended these; regenerating and appending again is idempotent because
     # _append_unique dedupes. It also covers a skipped/failed Step 13.
     merge_forward
 
+    # resume: keep existing per-host JSON; skip hosts that already completed
+    # (previously: rm -f high-value-*.json wiped everything on every run)
     local miss=0
     if ! command -v ffuf >/dev/null 2>&1; then
         warn "Step 14 SKIPPED: ffuf not found (run ./install.sh)"
@@ -1413,13 +1412,24 @@ local wl="$WL_DIR/high-value-paths.txt"
     local t t_json
     local -a t_files=()
     local i=1
+    # env knobs (A: cap per host, F: resume via existing JSON)
+    local max_job="${FFUF_MAXTIME_JOB:-120}"
     for t in "${targets[@]}"; do
+        t_json="$sdir/high-value-$(printf '%s' "$t" | sed 's|^[a-zA-Z]*://||; s|[^A-Za-z0-9._-]|_|g').json"
+
+        # F: resume — skip hosts with existing non-empty results
+        if [ -s "$t_json" ]; then
+            info "resume: skipping $t (results exist)"
+            t_files+=("$t_json")
+            ((i++))
+            continue
+        fi
+
         echo
         echo "━━━ Target $i/${#targets[@]}: ${t}"
-        echo "━━━ Command: ffuf -w high-value-paths.txt -u ${t%/}/FUZZ -mc 200,301,302,401,403 -ac -rate 20 -t 50"
+        echo "━━━ Command: ffuf -w high-value-paths.txt -u ${t%/}/FUZZ -mc 200,301,302,401,403 -ac -rate 20 -t 50 -maxtime-job ${max_job}"
         echo
-        t_json="$sdir/high-value-$(printf '%s' "$t" | sed 's|^[a-zA-Z]*://||; s|[^A-Za-z0-9._-]|_|g').json"
-        cmd "ffuf -w high-value-paths.txt -u ${t%/}/FUZZ -mc 200,301,302,401,403 -ac -rate 20 -t 50"
+        cmd "ffuf -w high-value-paths.txt -u ${t%/}/FUZZ -mc 200,301,302,401,403 -ac -rate 20 -t 50 -maxtime-job ${max_job}"
         ffuf \
             -w "$wl" \
             -u "${t%/}/FUZZ" \
@@ -1427,6 +1437,7 @@ local wl="$WL_DIR/high-value-paths.txt"
             -ac \
             -rate 20 \
             -t 50 \
+            -maxtime-job "${max_job}" \
             -o "$t_json" \
             -of json >>"$LOG" 2>&1 || warn "ffuf exited nonzero for $t (network?) — see ${LOG}"
         if [ -s "$t_json" ]; then

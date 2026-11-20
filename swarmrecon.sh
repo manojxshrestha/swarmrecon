@@ -174,7 +174,9 @@ banner() {
     printf '%s╭%s\n' "$C_CYAN" "$C_RESET"
     printf '%s│%s  %sswarmrecon%s  %s→%s  %s%s%s\n' \
         "$C_CYAN" "$C_RESET" "$C_BOLD" "$C_RESET" "$C_DIM" "$C_RESET" "$C_BOLD" "$DOMAIN" "$C_RESET"
-    printf '%s│%s  %s%s%s\n' "$C_CYAN" "$C_RESET" "$C_DIM" "$(date '+%Y-%m-%d %H:%M:%S')" "$C_RESET"
+    printf '%s│%s  %s%s%s  %s·%s  %sby @manojxshrestha%s\n' \
+        "$C_CYAN" "$C_RESET" "$C_DIM" "$(date '+%Y-%m-%d %H:%M:%S')" "$C_RESET" \
+        "$C_DIM" "$C_RESET" "$C_RED" "$C_RESET"
     printf '%s╰%s\n' "$C_CYAN" "$C_RESET"
 }
 
